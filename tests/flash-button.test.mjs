@@ -22,6 +22,7 @@ const btn = (page) => page.el("flash-btn");
 const attn = (page) => btn(page).classList.contains("attn");
 const open = (page) => !hidden(page, "flash-panel");
 const sentOpen = (page) => page.sent.filter((m) => m.type === "open_flash_helper");
+const sentFind = (page) => page.sent.filter((m) => m.type === "flash_find");
 
 for (const lang of ["zh", "en"]) {
   const name = (s) => s + "（" + lang + "）";
@@ -191,6 +192,43 @@ for (const lang of ["zh", "en"]) {
     assert.ok(hidden(page, "flash-note"), "发出去了就把上一句收掉");
   });
 
+  test(name("打开浮层时发 flash_find（后端再找一次闪购助手装在哪，装完不用重启）；关上不发；断线时照常打开、不写断线那句"), () => {
+    const page = loadDesktop({ lang });
+    hello(page, { flash_sale: calm() });
+    assert.deepEqual(sentFind(page), [], "没打开：不发");
+    btn(page).click();
+    assert.ok(open(page));
+    assert.deepEqual(sentFind(page), [{ type: "flash_find" }]);
+    btn(page).click();
+    assert.ok(!open(page));
+    assert.equal(sentFind(page).length, 1, "关上不发");
+    page.disconnect();
+    btn(page).click();
+    assert.ok(open(page), "发不出去也照常打开（状态还是上一份）");
+    assert.equal(sentFind(page).length, 1);
+    assert.ok(hidden(page, "flash-note"), "打开浮层不是用户要的操作：不写断线那句");
+  });
+
+  test(name("app_found=false（没找到闪购助手装在哪）：「打开闪购助手」藏起来，旁边说一句；再找到了（新的一份状态）就露出来"), () => {
+    const page = loadDesktop({ lang });
+    const gone = { conn: "unreachable", stale: false, products: [], alerts: [], attention: [], app_found: false };
+    hello(page, { flash_sale: gone });
+    assert.ok(!hidden(page, "flash-btn"), "没找到 .app 也有按钮（后端只在 9334 像闪购助手时才给这份状态）");
+    btn(page).click();
+    assert.ok(hidden(page, "flash-open"));
+    assert.ok(!hidden(page, "flash-ctl-note"));
+    assert.equal(page.el("flash-ctl-note").textContent, T(
+      "没找到闪购助手装在哪，这里打不开它。把它拖进「应用程序」，再关上、打开这个浮层，就会出现「打开闪购助手」。",
+      "Couldn’t find where Flash Sale Helper is installed, so it can’t be opened from here. "
+      + "Drag it to Applications, then close and reopen this panel to get Open Flash Sale Helper."));
+    page.push(Object.assign({ type: "flash_sale" }, gone, { app_found: true }));
+    assert.ok(!hidden(page, "flash-open"));
+    assert.ok(hidden(page, "flash-ctl-note"));
+    page.push(Object.assign({ type: "flash_sale" }, calm({ app_found: false, app_version: "0.9.0" })));
+    assert.ok(hidden(page, "flash-open"), "在运行时也不出「打开」");
+    assert.ok(!hidden(page, "flash-stop"), "停止照常（0.8.0 起的版本）");
+  });
+
   test(name("notice where=flash 写进浮层；关上浮层时收掉"), () => {
     const page = loadDesktop({ lang });
     hello(page, { flash_sale: calm() });
@@ -299,7 +337,7 @@ test("按钮在浮窗之后、换主播之前，浮层紧跟着它；文字是�
   assert.match(tag, /<span class="btn-label" data-en="Flash Sale">闪购<\/span>/);
   assert.match(tag, /<svg class="i" aria-hidden="true"><use href="#i-flash"\/><\/svg>/);
   assert.match(html, /<symbol id="i-flash" viewBox="0 0 16 16">/);
-  assert.match(html, /<script src="\/static\/flash\.js\?v=3"><\/script>\n {2}<script src="\/static\/app\.js/);
+  assert.match(html, /<script src="\/static\/flash\.js\?v=5"><\/script>\n {2}<script src="\/static\/app\.js/);
 });
 
 test("「Aa」紧挨着字号控件、名字同滑块（字幕字号 / Caption size），两种语言都写 Aa", () => {

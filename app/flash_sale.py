@@ -1,6 +1,11 @@
 """闪购助手（本机另一个程序）：找程序、发 GET /status、把回话规整成推给控制页的那份 dict；
 0.8.0 起另有控制接口，这里读控制密钥、发 POST /start、/stop、/resume（见「控制」一节）。
 
+找程序（直播助手平台轮廓 §5.2「程序名、候选位置」「本机指定位置」、§7.2 第 2 步）：先看 settings.json 的
+flash_sale.app_path（本机指定的位置，configured_app 只认完整路径、名字是 APP_NAME 的），再看 /Applications、
+~/Applications；按完整路径判断、按完整路径 open -a，不跑 mdfind、不按 bundle id。settings 由调用方读好交进来，
+这里不读文件。
+
 这里只有纯函数和一个记计时的小类，不依赖 Pipeline，不广播、不打印；接线在 app/pipeline_flash.py。
 不是界面文件：界面文字在前端按代码映射（web/flash.js），这里只产出代码、数字和闪购助手给的数据。
 
@@ -36,6 +41,7 @@ import os
 import re
 import stat
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,6 +60,13 @@ STUCK_FORGET_SEC = 600
 STUCK_TRACK_MAX = 600
 HTTP_TIMEOUT_SEC = 2
 OPEN_TIMEOUT_SEC = 10    # open -a 正常立刻返回；等这么久还没返回就当没打开
+# open 失败时从它的标准错误里读出的系统错误号最多留几个（launch-8：照实写给人，不解释），标准错误进终端时最多留几个字
+OPEN_CODES_MAX = 3
+OPEN_OUTPUT_SHOW = 300
+# settings.json 里同传关于闪购助手的本机设置（§5.8：第 11 步迁到 tools 键）。第 2 步只有程序位置这一项，只读不写
+SETTINGS_KEY = "flash_sale"
+SETTINGS_APP_PATH = "app_path"
+APP_PATH_MAX = 4096      # 比这还长的不是手写的路径
 
 # 控制（契约「控制(0.8.0 起)」）。地址写死；tests/conftest.py 把它换成没人听的端口，测试绝不碰真的 9334
 CONTROL_BASE = "http://127.0.0.1:9334"
@@ -139,7 +152,7 @@ _TS_MIN, _TS_MAX = 1e9, 1e11
 # ---- 找程序、打开程序 --------------------------------------------------------------------
 
 def app_candidates(home=None):
-    """要看的两个位置：/Applications 和 ~/Applications。只看这两处，不跑 mdfind。"""
+    """要看的两个位置：/Applications 和 ~/Applications。只看这两处，不跑 mdfind。本机指定的位置另算（configured_app）。"""
     out = [APP_PATH]
     try:
         base = Path.home() if home is None else Path(home)
@@ -149,11 +162,52 @@ def app_candidates(home=None):
     return tuple(out)
 
 
-def find_app(platform=None, candidates=None):
-    """装了就返回 .app 的路径，没装（或不是 macOS）返回 None。只在启动时判一次。"""
+def configured_app(saved):
+    """settings.json 里本机指定的位置（{"flash_sale": {"app_path": "…/闪购助手.app"}}）→ (路径, None)；没指定 → (None, None)；
+    指定了却用不了 → (None, 原因代码)。saved 是 load_settings 读出来的整份（调用方读，这里不碰文件）。
+    - 没有这个键、键是 null、app_path 缺了、是 null 或空串：没指定；
+    - bad_value：flash_sale 不是对象，app_path 不是字符串、带 NUL、长过 APP_PATH_MAX；
+    - not_absolute：展开 ~ 以后还不是完整路径；
+    - wrong_name：最后一截不是 APP_NAME（§5.2：只认名字对得上的 .app。iCloud 桌面上整文件夹替换留下的「闪购助手 2.app」
+      也不认：双击到旧的那份，同传显示的版本就和在跑的对不上）。
+    存不存在不在这里看（find_app 看），所以打开浮层时再找，指定的位置装上了就认得。"""
+    if not isinstance(saved, dict):
+        return None, None
+    block = saved.get(SETTINGS_KEY)
+    if block is None:
+        return None, None
+    if not isinstance(block, dict):
+        return None, "bad_value"
+    value = block.get(SETTINGS_APP_PATH)
+    if value is None or value == "":
+        return None, None
+    if not isinstance(value, str) or "\x00" in value or len(value) > APP_PATH_MAX:
+        return None, "bad_value"
+    try:
+        expanded = os.path.expanduser(value)
+        path = Path(expanded)
+    except (RuntimeError, KeyError, OSError, ValueError):
+        return None, "bad_value"
+    if not os.path.isabs(expanded):
+        return None, "not_absolute"
+    if unicodedata.normalize("NFC", path.name) != unicodedata.normalize("NFC", APP_NAME):
+        return None, "wrong_name"
+    return path, None
+
+
+def app_search_paths(candidates=None, configured=None):
+    """按先后要看的位置：本机指定的（有的话）在前，再是候选位置（缺省 app_candidates()）。"""
+    rest = tuple(app_candidates() if candidates is None else candidates)
+    return rest if configured is None else (configured,) + rest
+
+
+def find_app(platform=None, candidates=None, configured=None):
+    """找到了就返回 .app 的路径（第一个是文件夹的），没找到（或不是 macOS）返回 None。configured 是本机指定的位置
+    （configured_app 认过的），排在最前；不存在、不是文件夹就跳过，接着看候选位置。启动时、打开闪购浮层时各判一次
+    （app/pipeline_flash.py），只看文件系统。"""
     if (sys.platform if platform is None else platform) != "darwin":
         return None
-    for path in (app_candidates() if candidates is None else candidates):
+    for path in app_search_paths(candidates, configured):
         try:
             path = Path(path)
             if path.is_dir():
@@ -171,6 +225,37 @@ def open_argv(path=APP_PATH):
     """按完整路径打开：检测到的和打开的是同一个东西。不按 bundle id 打开（它不进公开仓库）。
     不带任何来自页面的参数：控制页发来的指令只有一个类型，argv 写死在这里。"""
     return ["open", "-a", str(path)]
+
+
+# NSError 的「Code=-10669」（Error Domain=NSOSStatusErrorDomain Code=-10669 …，嵌套的 NSUnderlyingError 里还有一层），
+# 旧系统的「LSOpenURLsWithRole() failed with error -10810」。别的数（_LSLine=4087、地址 0x600…）不算
+_OPEN_CODE = re.compile(r"(?:\bCode=|\berror )(-?\d{1,10})\b")
+_SPACE = re.compile(r"\s+")
+
+
+def open_error_codes(text):
+    """open 失败时标准错误里系统给的错误号（launch-8）：按出现的先后、去重，最多 OPEN_CODES_MAX 个，一个都没有返回 ()。
+    只认上面两种写法，不解释它们是什么意思（CLAUDE.md 第八条：只报看到的）。"""
+    if not isinstance(text, str):
+        return ()
+    out = []
+    for match in _OPEN_CODE.finditer(text):
+        code = int(match.group(1))
+        if code not in out:
+            out.append(code)
+        if len(out) >= OPEN_CODES_MAX:
+            break
+    return tuple(out)
+
+
+def open_output_text(raw):
+    """open 写到标准错误的字节 → 进终端的一行：按 UTF-8 解（坏字节换成 U+FFFD），空白并成一个空格，去掉控制字符，
+    长过 OPEN_OUTPUT_SHOW 个字就截断、末尾加「…」。None、空的给空串。"""
+    if not raw:
+        return ""
+    text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+    text = _TEXT_DROP.sub("", _SPACE.sub(" ", text)).strip()
+    return text if len(text) <= OPEN_OUTPUT_SHOW else text[:OPEN_OUTPUT_SHOW] + "…"
 
 
 # ---- 取 /status ----------------------------------------------------------------------------
@@ -375,6 +460,20 @@ async def post_control(action, token, base=None, timeout=HTTP_TIMEOUT_SEC, limit
     if body is None:
         return "bad_reply"
     return control_reply(status, body, action)
+
+
+def status_refusal(kind, value):
+    """一次 /status（fetch_status 的 (kind, value)）像不像闪购助手的回话：None = 像；否则是原因代码，同
+    StatusTracker.control_refusal 的三条：not_ok（没连上、没读懂、不是 JSON 对象）、schema（schema 不是 CONTROL_SCHEMA）、
+    page（page 不是契约里的代码）。启动时没找到 .app 的话，凭这一次决定要不要照样显示闪购按钮（launch-7，用户选 B）。"""
+    norm = normalize(value) if kind == "ok" else None
+    if norm is None:
+        return "not_ok"
+    if norm["_schema"] != CONTROL_SCHEMA:
+        return "schema"
+    if norm["page"] not in PAGE_CODES:
+        return "page"
+    return None
 
 
 def stop_precheck(kind, value):
