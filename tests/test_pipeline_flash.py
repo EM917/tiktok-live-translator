@@ -162,11 +162,18 @@ def test_off_macos_the_feature_does_not_exist(platform, tmp_path, capsys):
 
 
 def test_on_macos_without_the_app_the_feature_does_not_exist(tmp_path, capsys):
+    """没找到 .app、9334 上也没有像闪购助手的回话（launch-7 B 那条路见 tests/test_flash_find.py）：没有按钮，终端一行。"""
     p = bare_pipeline()
+
+    async def nobody(url):
+        return "unreachable", None
+    p._flash_fetch = nobody
     asyncio.run(p.attach_flash_sale(platform="darwin", candidates=[tmp_path / fs.APP_NAME]))
     assert "flash_sale" not in p.server.config and p._flash_task is None
     assert p.handle_control({"type": "open_flash_helper"}) is None and not p._bg_tasks
-    assert out_lines(capsys) == []
+    assert out_lines(capsys) == [
+        "[信息] 闪购助手：没找到 {}（找过 {}）。装在别处的话，可以把完整路径写进 settings.json 的 flash_sale.app_path"
+        .format(fs.APP_NAME, tmp_path / fs.APP_NAME)]
 
 
 def test_installed_the_first_hello_already_says_checking(tmp_path, capsys):
@@ -177,7 +184,7 @@ def test_installed_the_first_hello_already_says_checking(tmp_path, capsys):
     async def go():
         await p.attach_flash_sale(platform="darwin", candidates=[tmp_path / "nope" / fs.APP_NAME, app])
         # 第一次轮询之前，config 里已经有这个键：第一次 hello 就带着，按钮不会晚一拍冒出来
-        assert p.server.config["flash_sale"] == fs.empty_state("checking")
+        assert p.server.config["flash_sale"] == dict(fs.empty_state("checking"), app_found=True)
         assert p._flash_app == app and p._flash_task is not None
         with pytest.raises(Done):
             await p._flash_task
@@ -197,6 +204,10 @@ def test_the_page_learns_from_hello_whether_the_start_gate_is_open(gate, monkeyp
     没装就没有这个键；浮窗的 hello 里没有（FLOAT_CONFIG_KEYS），手机根本收不到 config。"""
     monkeypatch.setattr(fs, "START_ENABLED", gate)
     p = bare_pipeline()
+
+    async def nobody(url):
+        return "unreachable", None
+    p._flash_fetch = nobody
     asyncio.run(p.attach_flash_sale(platform="darwin", candidates=[tmp_path / "nope" / fs.APP_NAME]))
     assert "flash_start_enabled" not in p.server.config
     p.stop_flash_watch()
@@ -414,25 +425,32 @@ def test_the_real_fetch_against_a_local_fake_server(tmp_path):
 # ---- 「打开闪购助手」 ----------------------------------------------------------------------
 
 class FakeExec:
-    def __init__(self, rc=0, raises=None, hang=False):
-        self.rc, self.raises, self.hang = rc, raises, hang
+    """假的 asyncio.create_subprocess_exec：记下 argv 和参数，交回一个只有 communicate、returncode 的进程替身。
+    stderr 是 open 写到标准错误的字节（launch-8：后端把系统给的错误号读出来）。"""
+
+    def __init__(self, rc=0, raises=None, hang=False, stderr=b""):
+        self.rc, self.raises, self.hang, self.stderr = rc, raises, hang, stderr
         self.calls = []
 
     async def __call__(self, *argv, **kwargs):
         self.calls.append((argv, kwargs))
         if self.raises is not None:
             raise self.raises
+        proc = SimpleNamespace(returncode=None)
 
-        async def wait():
+        async def communicate():
             if self.hang:
                 await asyncio.sleep(30)
-            return self.rc
-        return SimpleNamespace(wait=wait)
+            proc.returncode = self.rc
+            return None, self.stderr
+        proc.communicate = communicate
+        return proc
 
 
 def opening_pipeline(tmp_path, exe):
     p = bare_pipeline()
     p._flash_app = installed_app(tmp_path)
+    p._flash_on = True
     p._flash_exec = exe
     clock = {"mono": 500.0}
     p._flash_mono = lambda: clock["mono"]
@@ -455,7 +473,7 @@ def test_open_runs_open_a_with_the_full_path_and_speeds_up_polling(tmp_path, cap
     click(p)
     (argv, kwargs), = exe.calls
     assert list(argv) == ["open", "-a", str(p._flash_app)]
-    assert kwargs == {"stdout": asyncio.subprocess.DEVNULL, "stderr": asyncio.subprocess.DEVNULL}
+    assert kwargs == {"stdout": asyncio.subprocess.DEVNULL, "stderr": asyncio.subprocess.PIPE}
     assert p.server.sent == []                       # 成功不发提示：状态自己会变
     assert p._flash_wake_ev.is_set()                 # 马上查一次
     assert p._flash_interval() == fs.POLL_OK_SEC
@@ -480,10 +498,11 @@ def test_a_non_zero_return_code_sends_one_flash_notice_and_no_status(tmp_path, c
     notices = p.server.of_type("notice")
     assert len(notices) == 1 and notices[0]["where"] == "flash"
     assert p.server.of_type("status") == [] and p.server.of_type("incident") == []
-    assert notices[0]["text"] == "没能打开闪购助手（open 返回 1）。"
+    assert notices[0]["text"] == "没能打开闪购助手（open 返回 1）。可以在访达里双击闪购助手，再试一次。"
     with i18n.use("en"):
         en = i18n.render(notices[0])["text"]
-    assert en == "Couldn’t open Flash Sale Helper (open returned 1)." and not CJK.search(en)
+    assert en == ("Couldn’t open Flash Sale Helper (open returned 1). "
+                  "Double-click Flash Sale Helper in Finder to try again.") and not CJK.search(en)
     assert p._flash_boost_until is None and not p._flash_opening
     assert out_lines(capsys)[-1] == "[警告] 闪购助手：open 返回 1，没有打开"
 
@@ -497,9 +516,10 @@ def test_open_that_fails_or_hangs_sends_the_plain_notice(exe_kwargs, line, tmp_p
     p, _clock = opening_pipeline(tmp_path, FakeExec(**exe_kwargs))
     click(p)
     (notice,) = p.server.of_type("notice")
-    assert notice["where"] == "flash" and notice["text"] == "没能打开闪购助手。"
+    assert notice["where"] == "flash" and notice["text"] == "没能打开闪购助手。可以在访达里双击闪购助手，再试一次。"
     with i18n.use("en"):
-        assert i18n.render(notice)["text"] == "Couldn’t open Flash Sale Helper."
+        assert i18n.render(notice)["text"] == ("Couldn’t open Flash Sale Helper. "
+                                               "Double-click Flash Sale Helper in Finder to try again.")
     assert out_lines(capsys)[-1] == line
     assert not p._flash_opening
 
@@ -510,11 +530,14 @@ def test_a_double_click_runs_open_only_once(tmp_path):
 
     async def slow_exec(*argv, **kwargs):
         calls.append(argv)
+        proc = SimpleNamespace(returncode=None)
 
-        async def wait():
+        async def communicate():
             await gate["ev"].wait()
-            return 0
-        return SimpleNamespace(wait=wait)
+            proc.returncode = 0
+            return None, b""
+        proc.communicate = communicate
+        return proc
 
     p, _clock = opening_pipeline(tmp_path, slow_exec)
 
@@ -763,12 +786,17 @@ def test_handle_control_routes_open_flash_helper_and_returns_at_once(tmp_path):
 
 
 def test_pipeline_flash_sends_only_its_own_type_and_notices_and_touches_no_audit_or_settings():
-    """第六条：不借 status、incident、报警来提醒；不写审计、不加 settings 键。读语法树，注释和文档串不算。"""
+    """第六条：不借 status、incident、报警来提醒；不写审计、不写 settings。读语法树，注释和文档串不算。
+    settings 只读：pipeline_flash.py 读 flash_sale 这个键里本机指定的位置（直播助手平台轮廓 §7.2 第 2 步）；
+    写它是第 6 步首页「工具」行的事。flash_sale.py 是纯函数，连读都不读（读出来的那份由调用方交给 configured_app）。"""
     for name in ("pipeline_flash.py", "flash_sale.py"):
         tree = ast.parse((ROOT / "app" / name).read_text(encoding="utf-8"))
         names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
         names |= {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-        for banned in ("audit", "_save_setting", "save_setting", "load_settings", "incident", "_add_incident"):
+        banned_here = ("audit", "_save_setting", "save_setting", "incident", "_add_incident")
+        if name == "flash_sale.py":
+            banned_here += ("load_settings",)
+        for banned in banned_here:
             assert banned not in names, (name, banned)
         assert not [n for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == "status"
                     and isinstance(n.value, ast.Attribute) and n.value.attr == "server"], name
@@ -821,6 +849,7 @@ def control_pipeline(tmp_path, post=None, token=None):
     停止发之前当场读的那一次 /status 走 _flash_fetch：apoll 换上的那个（交出最近 poll 的那一份）照样交给它。"""
     p = bare_pipeline()
     p._flash_app = installed_app(tmp_path)
+    p._flash_on = True
     clock = {"mono": 500.0, "slept": []}
     p._flash_mono = lambda: clock["mono"]
     p._flash_post = post if post is not None else FakePost()

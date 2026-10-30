@@ -63,6 +63,14 @@ test("按钮旁边那句：版本门槛、页面没准备好、确认框弹着",
                "Stop works here once the confirmation is handled.");
 });
 
+test("没找到闪购助手装在哪（app_found=false）：旁边那句说拖进 Applications、再开一次浮层", () => {
+  const v = F.flashControlView({ conn: "unreachable", stale: false, products: [], alerts: [], attention: [], app_found: false }, {});
+  assert.equal(v.open.shown, false);
+  assert.equal(english(v.note.text),
+               "Couldn’t find where Flash Sale Helper is installed, so it can’t be opened from here. "
+               + "Drag it to Applications, then close and reopen this panel to get Open Flash Sale Helper.");
+});
+
 test("浮层最底下那句：有开始、停止、继续时一句，一颗都没有时换回第一步那句", () => {
   const doc = makeFlashDoc();
   const els = {};

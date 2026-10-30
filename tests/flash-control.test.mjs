@@ -212,6 +212,58 @@ test("连不上、读不出、正在查看、没有状态：开始、停止、�
   }
 });
 
+const NOT_FOUND = "没找到闪购助手装在哪，这里打不开它。把它拖进「应用程序」，再关上、打开这个浮层，就会出现「打开闪购助手」。";
+
+test("没找到闪购助手装在哪（后端的 app_found 是 false，launch-7 B）：「打开闪购助手」不出；没在运行、读不出时旁边说一句能做什么", () => {
+  // 找到了，或者状态里没有这个键（旧状态、夹具）：照常出「打开」
+  for (const state of [calm(), idle(), calm({ app_found: true }), { conn: "unreachable" }, { conn: "checking" }]) {
+    assert.equal(view(state, {}).open.shown, true, JSON.stringify(state));
+  }
+  assert.equal(view(null, {}).open.shown, true);
+  // 没找到、在运行：没有「打开」，停止照常，旁边不多说（这时用不着打开它）
+  let v = view(calm({ app_found: false }), {});
+  assert.equal(v.open.shown, false);
+  assert.deepEqual(usable(v), ["stop"]);
+  assert.equal(v.note, null);
+  // 没找到、没在运行（连不上）、读不出：一颗按钮都没有，旁边说去哪儿放它、放好以后怎么让「打开」出来
+  for (const conn of ["unreachable", "bad_response"]) {
+    v = view({ conn, why: conn === "bad_response" ? "no_answer" : null, stale: false, products: [], alerts: [],
+               attention: [], app_found: false }, {});
+    assert.equal(v.open.shown, false, conn);
+    assert.deepEqual(shown(v), [], conn);
+    assert.deepEqual(v.note, { text: NOT_FOUND }, conn);
+    assert.equal(v.any, false);
+  }
+  observed(NOT_FOUND);
+  // 正在查看：还不知道它开没开，不说
+  assert.equal(view({ conn: "checking", app_found: false }, {}).note, null);
+  // 停止在后端等着再试：那句要紧，盖过这一句
+  v = view({ conn: "unreachable", app_found: false, control: { action: "stop", phase: "retrying" } }, {});
+  assert.deepEqual(v.note, { text: "停止还没被接受，30 秒内每 3 秒再试一次。" });
+});
+
+test("renderFlashControls：「打开闪购助手」跟着 app_found 藏起、露出，禁用由 app.js 管（断线时）", () => {
+  const doc = makeFlashDoc();
+  const els = ctlEls(doc);
+  els.open = doc.createElement("button");
+  els.open.disabled = true;
+  F.renderFlashControls(doc, els, view({ conn: "unreachable", app_found: false }, {}));
+  assert.ok(els.open.classList.contains("hidden"));
+  assert.ok(!els.note.classList.contains("hidden"));
+  assert.equal(els.note.textContent, NOT_FOUND);
+  assert.equal(els.desc.textContent, "这里只显示状态。要操作，请到闪购助手里。");
+  F.renderFlashControls(doc, els, view({ conn: "unreachable", app_found: true }, {}));
+  assert.ok(!els.open.classList.contains("hidden"));
+  assert.ok(els.note.classList.contains("hidden"));
+  assert.equal(els.open.disabled, true, "不碰 disabled");
+  F.renderFlashControls(doc, els, view(calm({ app_found: false }), {}));
+  assert.ok(els.open.classList.contains("hidden"));
+  // 没给 open 这个节点（老调用）：照常画别的
+  delete els.open;
+  F.renderFlashControls(doc, els, view(calm(), {}));
+  assert.ok(!els.stop.classList.contains("hidden"));
+});
+
 test("版本门槛：认得出且低于 0.8.0 只留「打开」，旁边写「0.8.0 起才能……」；认不出的照常出按钮", () => {
   assert.deepEqual(F.FLASH_CONTROL_SINCE, [0, 8, 0]);
   const gate = "闪购助手 0.8.0 起才能从这里开始、停止。";
