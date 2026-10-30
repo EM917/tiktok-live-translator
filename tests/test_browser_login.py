@@ -653,6 +653,112 @@ def test_selfcheck_row_is_ok_when_one_browser_shows_a_login(monkeypatch, tmp_pat
     _assert_plain(row, calls)
 
 
+def _refuse_safari(monkeypatch, home):
+    """Safari 的 cookie 文件在，读它时系统拒绝（PermissionError，和没有「完全磁盘访问权限」时一样）。"""
+    denied = _safari_file(home, [(".tiktok.com", "sessionid")])
+    real_open = open
+
+    def guarded_open(path, *a, **k):
+        if str(path) == str(denied):
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(bl, "open", guarded_open, raising=False)
+
+
+def _first_step_refused(monkeypatch, tmp_path):
+    """2026-10-29 新 Mac 授权之前的样子：Chrome 里读到了 TikTok 登录，Safari 被系统拒绝读取。"""
+    home, calls = _selfcheck_env(monkeypatch, tmp_path)
+    _chrome_db(home, [(".tiktok.com", "ttwid"), (".tiktok.com", "sessionid")])
+    _refuse_safari(monkeypatch, home)
+    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: ["/opt/demo/bin/python3.13"])
+    monkeypatch.delenv("TERM", raising=False)          # 从 .app 启动
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    return calls
+
+
+def test_selfcheck_row_warns_when_the_first_step_cannot_read_safari(monkeypatch, tmp_path):
+    """login-5（用户 2026-10-29 选 A）：登录优先那一步没点名浏览器时只读 Safari（resolver._login_first_browsers），
+    Safari 被系统拒绝读取时每次解析都跳过这一步。以前这一行只要 Chrome 读到了登录就是「通过」、不带步骤，中控点
+    「开始翻译」之前看不到任何授权提示，要等第一次解析完顶部才挂出那条带步骤的提示。现在这一行是「提醒」（摘要
+    「通过 · 1 项提醒」），带「完全磁盘访问权限」那三步和「我加好了，再查一次」。只写看到的和程序自己怎么走，
+    不说 Chrome 的登录管不管用（第八条：那天授权前后不是同一分钟配对）。"""
+    calls = _first_step_refused(monkeypatch, tmp_path)
+    row = run(selfcheck.check_browser_login())
+    assert row["level"] == "warn"
+    assert row["detail"] == (
+        "Chrome：读到了 TikTok 登录；Safari：系统拒绝读取。解析流地址时，登录优先这一步只读 Safari 里的 TikTok 登录，"
+        "读不了就跳过这一步（只有 TikTok 要求登录才给流地址的直播间用得到，其余直播间不受影响）")
+    # 能照做的只有授权那几步：Chrome 已经读到登录，「在 Chrome（或 Safari）里登录」不相干
+    assert row["fix"] == bl.FDA_OBSERVED + bl.fda_steps()
+    assert bl.LOGIN_STEPS not in row["fix"]
+    assert row["recheck"] is True
+    assert selfcheck.summarize([row]) == {"total": 1, "fail": 0, "warn": 1, "ok": 0}
+    _assert_plain(row, calls)
+    en = i18n.render(row, i18n.EN)
+    assert en["detail"] == (
+        "Chrome: found a TikTok sign-in; Safari: macOS didn’t allow access. When looking up the stream URL, the app "
+        "first reads the TikTok sign-in from Safari only and skips that step when it can’t read it. Only live "
+        "streams where TikTok provides the stream URL only to signed-in viewers need this. Other live streams "
+        "aren’t affected.")
+    for pattern, arm in ((EN_LABELS, en["detail"]), (EN_CAUSAL, en["detail"]), (ZH_CAUSAL, row["detail"])):
+        assert not pattern.search(arm), (pattern.search(arm).group(), arm)
+
+
+def test_the_steps_skip_the_sign_in_line_when_another_browser_has_one():
+    """Safari 被拒、Chrome 读到登录、Firefox 读得到没登录：步骤仍然只有授权那几步。叫人「在 Chrome（或 Safari）里
+    登录」是给一个登录都没读到的时候的。"""
+    row = selfcheck._browser_login_row({"safari": bl.BLOCKED, "chrome": bl.OK, "firefox": bl.NOT_LOGGED_IN})
+    assert row["level"] == "warn" and row["recheck"] is True
+    assert row["fix"] == bl.FDA_OBSERVED + bl.fda_steps()
+    # 照旧列出每个浏览器看到了什么
+    assert row["detail"].startswith(bl.observed_text(
+        {"safari": bl.BLOCKED, "chrome": bl.OK, "firefox": bl.NOT_LOGGED_IN}) + "。")
+
+
+@pytest.mark.parametrize("named", ["setting", "flag"])
+def test_a_named_browser_is_the_only_one_the_first_step_reads(monkeypatch, tmp_path, named):
+    """中控点名了 Chrome（设置里的 cookies_browser_only，或 --cookies-browser chrome）：解析只读 Chrome，Safari 一次都
+    不碰（resolver._browser_order），Safari 读不读得到不影响这一行。"""
+    from app import settings
+    _first_step_refused(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
+    if named == "setting":
+        settings.save_setting("cookies_browser_only", "chrome")
+        row = run(selfcheck.check_browser_login())
+    else:
+        row = run(selfcheck.check_browser_login("chrome"))
+    assert row["level"] == "ok" and "recheck" not in row
+    assert row["detail"] == "Chrome：读到了 TikTok 登录；Safari：系统拒绝读取"
+
+
+def test_without_the_first_step_a_refused_safari_is_not_a_warning(monkeypatch, tmp_path):
+    """--cookies-browser none：解析不借任何浏览器的登录，也就没有登录优先那一步。"""
+    _first_step_refused(monkeypatch, tmp_path)
+    row = run(selfcheck.check_browser_login("none"))
+    assert row["level"] == "ok" and "recheck" not in row
+
+
+def test_run_all_hands_the_cookies_browser_flag_to_the_row(monkeypatch):
+    """启动、开场那两轮自检用的是命令行的 --cookies-browser：和解析时登录优先那一步看的是同一个。"""
+    seen = []
+
+    async def quick(*a, **k):
+        return selfcheck._check("x", "ok", "fine")
+
+    async def login_row(cookies_browser="auto"):
+        seen.append(cookies_browser)
+        return selfcheck._check(selfcheck.NAMES["browser_login"], "ok", "fine")
+
+    for name in ("check_ffmpeg", "check_denoise", "check_asr", "check_translator", "check_watchlist",
+                 "check_glossary", "check_audit", "check_resolver", "check_comments", "check_disk"):
+        monkeypatch.setattr(selfcheck, name, quick)
+    monkeypatch.setattr(selfcheck, "check_browser_login", login_row)
+    run(selfcheck.run_all(SimpleNamespace(cookies_browser="chrome")))
+    run(selfcheck.run_all(SimpleNamespace()))                     # 老的替身 args 不带这个属性
+    assert seen == ["chrome", "auto"]
+
+
 def test_selfcheck_chrome_login_is_read_from_names_only(monkeypatch, tmp_path):
     """库是只读 + immutable 打开的：查完名字，文件旁边不许多出 -wal/-journal。"""
     home, calls = _selfcheck_env(monkeypatch, tmp_path, browsers=("chrome",))
@@ -1155,7 +1261,7 @@ def test_no_login_notice_with_the_fda_steps_is_split_into_lines(monkeypatch, log
     """「没有读到 TikTok 登录」那条持续提示带完全磁盘访问权限那几步时：第一行是登录优先那一步看到了什么、加上授权那几步
     的头一句（页面折叠时只露这一行，web/app.js foldIncident；2026-10-29 以前第一行的动作是「请在 Safari 里登录」，Safari
     读不了时照做是白忙）；那几步原样连在一起、权限范围单独一行；影响哪类直播间和「自动消失」在最后单独一行，不接在
-    权限范围后面。不再指向自检「浏览器登录态」那一行：别的浏览器读到登录时那一行是「通过」、不带步骤。"""
+    权限范围后面。不再指向自检「浏览器登录态」那一行：步骤就在这条提示里，直播中设置分组收着、那一行看不见。"""
     monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_SPACED))
     text = bl.no_login_notice(login)
     rendered = i18n.render(text, lang)

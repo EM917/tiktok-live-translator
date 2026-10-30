@@ -2643,7 +2643,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         from .resolver import _login_first_browsers
         from .selfcheck import browser_login_state
 
-        observed, row = await browser_login_state()
+        # 带上 --cookies-browser：那一行和启动自检按同一个「登录优先那一步读谁」判（selfcheck._browser_login_row 的 first）
+        observed, row = await browser_login_state(getattr(self.args, "cookies_browser", "auto"))
         print("[信息] 浏览器登录态重查：{}".format(
             " ".join("{}={}".format(b, c) for b, c in observed.items()) or "没有要查的浏览器"))
         current = self._published_checks()
