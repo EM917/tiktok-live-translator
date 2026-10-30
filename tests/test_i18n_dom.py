@@ -23,6 +23,7 @@ TLT_DOM_SHOTS=<目录> 时同一批场景各出一张 PNG，英文 README 截图
 import asyncio
 import base64
 import contextlib
+import copy
 import itertools
 import json
 import os
@@ -592,6 +593,40 @@ def _hidden(html, element_id):
     return bool(tag) and "hidden" in _classes(tag.group(0))
 
 
+# 首页输入框下面那一行（#asr-model-hint，2026-10-29 launch-2 A）的文字和按钮；大小来自 app/asr.py MODEL_SIZES_MB
+ASR_HINT_TEXT = {"en": ("The speech model isn’t downloaded yet (about 3.1 GB)", "Download Now"),
+                 "zh": ("语音模型还没下载（约 3.1 GB）", "现在下载")}
+
+
+@needs_chrome
+@pytest.mark.parametrize("name", S.ASR_FETCH_HOMES)
+def test_home_says_the_speech_model_is_not_downloaded(dom, name):
+    """新装机、语音模型还没下载：首页输入框下面那一行出现，句子和按钮都画出来了；自检那一行也带着「现在下载」。
+    英文页的漏翻由 test_english_page_has_no_chinese_left 扫（home-asr-fetch 在 DESKTOP_EN 里）。"""
+    result = dom.scan(name)
+    html = result["dom"]
+    lang = "zh" if name.endswith("-zh") else "en"
+    sentence, label = ASR_HINT_TEXT[lang]
+    assert not _hidden(html, "asr-model-hint"), "首页那一行没出现"
+    assert _holders(html, sentence), "没画出「{}」".format(sentence)
+    assert re.search(r'<button[^>]*\bid="asr-model-hint-btn"[^>]*>{}</button>'.format(re.escape(label)), html), \
+        "首页按钮不是「{}」".format(label)
+    assert "sc-action" in html, "自检「语音识别」一行没带「现在下载」"
+
+
+@needs_chrome
+@needs_mac
+@pytest.mark.parametrize("name", S.ASR_FETCH_HOMES)
+def test_home_model_row_fits_on_one_line(dom, name):
+    """这一行在 600px 的开始面板里一行放得下：句子不折行（一行 18px），整行不横向溢出，按钮在这一行里面。"""
+    got = dom.scan(name)["measure"]
+    row, text, btn = (got[sel] for sel in S.ASR_HINT_MEASURE)
+    assert row and row["width"] > 0 and text and btn, "量不到：{} {} {}".format(row, text, btn)
+    assert row["scrollWidth"] <= row["clientWidth"] + 1, "这一行横向溢出 {}".format(row)
+    assert text["height"] < 30, "句子折成了两行 {}".format(text)
+    assert btn["width"] > 0 and btn["right"] <= row["right"], "按钮没在这一行里 {} {}".format(btn, row)
+
+
 @needs_chrome
 def test_guard_scenario_clicks_took_effect(dom):
     """弹幕留意的场景：点击没点到的话，展开后才有的文字就没被扫到而扫描照样绿。设置行展开了；
@@ -770,6 +805,80 @@ def test_home_top_bar_says_what_the_caption_menu_is_for(dom, base, width):
     else:
         need(flash and flash["width"] == 0, "没装闪购助手，按钮不该出现 {}".format(flash))
     need(font and font["width"] == 0, "首页不该有「Aa」{}".format(font))
+    assert not problems, "\n".join(problems)
+
+
+@needs_chrome
+@needs_mac
+@pytest.mark.parametrize("name", sorted(S.HINTS))
+def test_the_caption_menu_hint_offers_the_switch_while_live(dom, name):
+    """直播中、窗口模式默认 1000px：在「字幕译成」里选了另一种界面语言，下拉下面弹出就地提示，
+    里面有切换界面的按钮（用户 2026-10-29：连接中、直播中也给）。提示在顶栏下面、整个在窗口里；按钮露全、
+    在提示里面，字是那种语言的自称、lang 跟着它；顶栏照旧不溢出。"""
+    result = dom.scan(name)
+    got, html, vw = result["measure"], result["dom"], result["viewport"]["width"]
+    problems = []
+
+    def need(ok, what):
+        if not ok:
+            problems.append(what)
+
+    need(vw == S.HINT_WIDTH, "窗口不是 {}px 宽：{}".format(S.HINT_WIDTH, result["viewport"]))
+    hint, btn, bar = got["#target-hint"], got["#target-hint-switch"], got[".topbar"]
+    need(bar and bar["scrollWidth"] <= bar["clientWidth"], ".topbar 溢出 {}".format(bar))
+    need(hint and hint["width"] > 0, "提示没弹出来 {}".format(hint))
+    need(btn and btn["width"] > 0, "直播中提示里该有切换按钮 {}".format(btn))
+    if hint and hint["width"] > 0 and btn and btn["width"] > 0:
+        need(hint["right"] <= vw and hint["right"] - hint["width"] >= 0, "提示出了窗口 {}".format(hint))
+        need(bar and hint["top"] >= bar["bottom"] - 0.5, "提示该在顶栏下面 {} / {}".format(hint, bar))
+        need(btn["right"] <= hint["right"] and btn["right"] - btn["width"] >= hint["right"] - hint["width"]
+             and btn["bottom"] <= hint["bottom"], "按钮出了提示 {} / {}".format(btn, hint))
+        need(btn["textWidth"] <= btn["innerWidth"] + 0.01, "按钮的字没露全 {}".format(btn))
+    want_name, want_lang = ("中文", "zh-CN") if S.HINTS[name][2].startswith("zh") else ("English", "en")
+    tag = re.search(r'<button[^>]*\bid="target-hint-switch"[^>]*>([^<]*)</button>', html)
+    need(tag and tag.group(1) == want_name and 'lang="{}"'.format(want_lang) in tag.group(0),
+         "按钮该写 {}（lang={}）：{}".format(want_name, want_lang, tag.group(0) if tag else None))
+    assert not problems, "\n".join(problems)
+
+
+def _pressed(html, element_id):
+    """--dump-dom 里这个元素的开标签上 aria-pressed="true"（属性先后不论）。"""
+    tag = re.search(r'<[^>]*\bid="{}"[^>]*>'.format(re.escape(element_id)), html)
+    return bool(tag) and 'aria-pressed="true"' in tag.group(0)
+
+
+@needs_chrome
+@needs_mac
+@pytest.mark.parametrize("base", S.HOME_BASES)
+@pytest.mark.parametrize("width", S.HOME_WIDTHS)
+def test_home_language_switch_sits_in_the_title_area_corner(dom, base, width):
+    """待机首页标题区右上角的「中文 / English」两段切换（用户 2026-10-29）：露出来、在窗口里，不压住居中的
+    图标（横向在它右边）和标题（整个在标题上面）；两颗都露全，按下的是本页的语言。设置里界面语言那一行
+    的名字（英文页「App Language · 界面语言」）和摘要都露全，摘要没被省略号截掉。"""
+    result = dom.scan("{}@{}".format(base, width))
+    got, html, lang = result["measure"], result["dom"], dom.scenarios["{}@{}".format(base, width)]["lang"]
+    problems = []
+
+    def need(ok, what):
+        if not ok:
+            problems.append(what)
+
+    quick, glyph, title = got["#lang-quick"], got[".sp-glyph"], got[".sp-title"]
+    need(quick and quick["width"] > 0, "两段切换没露出来 {}".format(quick))
+    if quick and quick["width"] > 0:
+        need(quick["right"] <= result["viewport"]["width"], "两段切换出了窗口 {}".format(quick))
+        need(glyph and quick["right"] - quick["width"] >= glyph["right"] + 8,
+             "两段切换压到了图标 {} / {}".format(quick, glyph))
+        need(title and quick["bottom"] <= title["top"], "两段切换压到了标题 {} / {}".format(quick, title))
+        for code in ("zh", "en"):
+            btn = got["#lang-quick-" + code]
+            need(btn and btn["width"] > 0 and btn["textWidth"] <= btn["innerWidth"] + 0.01,
+                 "「{}」那颗没露全 {}".format(code, btn))
+    need(_pressed(html, "lang-quick-" + lang) and not _pressed(html, "lang-quick-" + ("en" if lang == "zh" else "zh")),
+         "按下的应该是本页的语言 {}".format(lang))
+    name, summary = got["#lang-head .set-name"], got["#lang-summary"]
+    need(name and name["width"] > 0 and name["textWidth"] <= name["innerWidth"] + 0.01, "行名没露全 {}".format(name))
+    need(summary and summary["textWidth"] <= summary["innerWidth"] + 0.01, "摘要被省略号截了 {}".format(summary))
     assert not problems, "\n".join(problems)
 
 
@@ -1186,6 +1295,39 @@ def test_the_home_scenarios_carry_a_target_inside_and_one_outside_the_four(tmp_p
         for width in S.HOME_WIDTHS:
             sc = built["{}@{}".format(base, width)]
             assert sc["size"][0] == width and S.TARGET_EXTRA_SELECTED in sc["measure"]
+
+
+def test_the_hint_scenarios_differ_from_their_base_only_by_size_target_and_the_one_pick(tmp_path):
+    """不开 Chrome：「字幕译成」就地提示的两个场景就是窗口模式的直播中场景，只改了窗口宽、当前目标，
+    点击换成在下拉里选另一种界面语言那一步；英文那个进扫描。"""
+    built = S.build(tmp_path)
+    assert set(S.DESKTOP_MEASURE) >= set(S.HINT_MEASURE)
+    assert "live-hint" in S.DESKTOP_EN and "live-hint-zh" not in S.DESKTOP_EN
+    for name, (base, target, pick) in S.HINTS.items():
+        sc = copy.deepcopy(built[name])
+        assert sc["clicks"] == [{"select": "#target-lang", "value": pick}]
+        assert sc["size"] == [S.HINT_WIDTH, built[base]["size"][1]]
+        assert sc["messages"][0]["config"]["target_lang"] == target != pick
+        assert sc["messages"][0]["config"]["status"]["state"] == "live"
+        assert sc["messages"][0]["config"]["ui_lang_available"] is True
+        assert sc["messages"][0]["config"]["ui_lang_locked"] is False
+        sc["messages"][0]["config"]["target_lang"] = built[base]["messages"][0]["config"]["target_lang"]
+        for key in ("name", "size", "clicks"):
+            sc[key] = built[base][key]
+        assert sc == built[base], name
+
+
+def test_the_home_scenarios_show_the_language_switch(tmp_path):
+    """不开 Chrome：首页的场景都带着界面语言行的几个键（ui_lang_available 为 true、没被 --ui-lang 固定），
+    页面才会露出两段切换给 G10 量；按下的语言就是场景页面的语言。"""
+    built = S.build(tmp_path)
+    assert set(S.DESKTOP_MEASURE) >= set(S.HOME_LANG_MEASURE)
+    for base in S.HOME_BASES:
+        for width in S.HOME_WIDTHS:
+            sc = built["{}@{}".format(base, width)]
+            config = sc["messages"][0]["config"]
+            assert config["ui_lang_available"] is True and config["ui_lang_locked"] is False, sc["name"]
+            assert config["ui_lang"] == sc["lang"], sc["name"]
 
 
 def test_every_live_top_bar_scenario_has_a_copy_with_the_widest_caption_menu(tmp_path):

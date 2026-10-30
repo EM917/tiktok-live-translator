@@ -386,8 +386,10 @@ def test_the_selfcheck_row_carries_the_buttons_on_macos(monkeypatch, tmp_path):
     assert bl.fda_steps(buttons=True) in row["fix"]
     lines = [line.strip() for line in str(row["fix"]).split("\n")]
     assert all(lines.count(str(line)) == 1 for line in row["fda"].values())
-    # 别的浏览器读到了登录：「通过」、不带步骤，也不带按钮；直接调（不给 buttons）也不带
-    assert "fda" not in selfcheck._browser_login_row({"safari": bl.BLOCKED, "chrome": bl.OK}, buttons=True)
+    # 别的浏览器读到了登录、登录优先那一步要读的 Safari 被拒（login-5，#163）：这一行是「提醒」，走同一段，也带按钮；
+    # Safari 读得到只是没登录：不带；直接调（不给 buttons）也不带
+    assert selfcheck._browser_login_row({"safari": bl.BLOCKED, "chrome": bl.OK}, buttons=True)["fda"] \
+        == bl.fda_button_lines()
     assert "fda" not in selfcheck._browser_login_row({"safari": bl.NOT_LOGGED_IN}, buttons=True)
     assert "fda" not in selfcheck._browser_login_row(observed)
     # 不是 macOS：这一行「本机不适用」，什么都不带
