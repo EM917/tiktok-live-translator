@@ -751,6 +751,42 @@ def test_the_update_arms_the_guard_and_the_resume_marker_names_both_commits(monk
     assert armed["resume"] == marker                               # 抄了一份，退回时还得回去
 
 
+def test_an_update_whose_markers_cannot_be_saved_does_not_promise_to_resume(monkeypatch, isolated, capsys):
+    """settings.json 在、却读不出来时 save_setting 不写（不盖掉里面原有的设置）：「重启后接着监听」和启动检查
+    这两个记号都写不进去。以前照样说「重启后自动恢复监听」，重启后监听其实没接上；现在状态行不这么说，终端照实说
+    重启后不会接着监听、新版本起不来时不会自动退回。"""
+    import errno
+    from app import updater as updater_mod
+    from tests.test_resilience_update import RecordingServer, make_live_pipeline, make_updater
+    monkeypatch.setattr(updater_mod, "ROOT", isolated)
+    monkeypatch.setattr(settings_mod, "_unreadable", {"problem": None})
+    path = isolated / "settings.json"
+    raw = b'{"translator": "deepl"}'
+    path.write_bytes(raw)
+    real = type(path).read_bytes
+    blocked = {"on": True}
+
+    def read_bytes(self):
+        if self == path and blocked["on"]:
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(self))
+        return real(self)
+    monkeypatch.setattr(type(path), "read_bytes", read_bytes)
+    server, events = RecordingServer(), []
+    u, _pip, execs = make_updater(monkeypatch, server, events)
+    p, _state = make_live_pipeline(server, events, isolated)
+    p.updater = u
+
+    run(p._apply_update())
+
+    blocked["on"] = False
+    assert execs
+    assert server.statuses()[-1][:2] == ("idle", "更新完成，正在自动重启…")
+    assert not any("重启后自动恢复监听" in str(s[1]) for s in server.statuses())
+    out = capsys.readouterr().out
+    assert "重启后不会自动接着监听" in out and "新版本起不来时，不会自动退回" in out
+    assert path.read_bytes() == raw
+
+
 def test_an_update_without_a_known_head_restarts_without_the_guard(monkeypatch, isolated, capsys):
     from app import updater as updater_mod
     from tests.test_resilience_update import RecordingServer, make_updater

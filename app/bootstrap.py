@@ -57,6 +57,8 @@ CONSTRAINTS = "constraints.txt"                   # 测试过的那一套版本�
 # 本程序要求的最低 Python（D14）。main.py 的版本检查、venv_needs_rebuild、ready_fast_path 都看它；
 # 再提时同步改 tools/find_python.sh、Start.bat、setup.sh、setup.ps1、README 和 CI 矩阵
 MIN_PYTHON = (3, 10)
+# 最近一次 pip -r 的结果（JSON：digest / at / exit）。装失败时写；装成功却写不进、读不回 REQ_STAMP 时也写，
+# 带 "ok": true（write_requirements_stamp）
 REQ_ATTEMPT = ".requirements-attempt.json"
 # 同一份清单装失败后多久内不再为它重跑 pip -r（真缺核心依赖时不受这个限制）
 REQ_RETRY_SEC = 24 * 3600
@@ -203,8 +205,8 @@ def _note_unreadable_stamp(root, exc):
     path = str(Path(root) / ".venv" / REQ_STAMP)
     if path not in _stamp_reported:
         _stamp_reported.add(path)
-        print("[初始化] 读不了安装记录 {}：[Errno {}] {}。这次不按清单补装；缺核心组件时照旧会装".format(
-            path, exc.errno, exc.strerror or exc))
+        print("[初始化] 读不了安装记录 {}：[Errno {}] {}。改看 {} 里记的：这份清单在那里记过装成功就不补装，"
+              "没记过就补装一次".format(path, exc.errno, exc.strerror or exc, REQ_ATTEMPT))
 
 
 # 装不上程序照样能跑的组件：mlx-whisper 退回 CPU 识别，TikTokLive 只影响观众弹幕，
@@ -248,13 +250,23 @@ def write_requirements_stamp(root, digest):
         return False
     try:
         (venv / REQ_STAMP).write_text(digest + "\n", encoding="utf-8")
+        written = True
+    except OSError:
+        written = False
+    if written and _requirements_stamp(root)[0] == digest:
+        try:
+            (venv / REQ_ATTEMPT).unlink()
+        except OSError:
+            pass
+        return True
+    # 记录写不进去、或写了读不回来（chmod 000、路径上是个文件夹……）：把「这份清单装成功了」记进尝试记录。
+    # requirements_pending 认它；不记的话下次启动又当成没装过，次次补装
+    data = {"digest": digest, "at": time.time(), "ok": True}
+    try:
+        (venv / REQ_ATTEMPT).write_text(json.dumps(data) + "\n", encoding="utf-8")
+        return True
     except OSError:
         return False
-    try:
-        (venv / REQ_ATTEMPT).unlink()
-    except OSError:
-        pass
-    return True
 
 
 def record_requirements_failure(root, digest, exit_code, now=None):
@@ -274,7 +286,8 @@ def record_requirements_failure(root, digest, exit_code, now=None):
 def forget_requirements_failure(root):
     """启动时撞上 ImportError（新依赖确实没装上、程序起不来）就调用：删掉失败记录，
     下次启动立刻重跑 pip -r。24 小时不重试只该用在「装不上但程序照样能跑」的时候——
-    起不来还不重试，「重新打开会自动继续安装」就又落空了。"""
+    起不来还不重试，「重新打开会自动继续安装」就又落空了。安装记录读不了时记在这里的「装成功」
+    也一起删掉：下次启动同样补装。"""
     try:
         (Path(root) / ".venv" / REQ_ATTEMPT).unlink()
         return True
@@ -297,12 +310,16 @@ def requirements_pending(root, now=None):
     recorded, unreadable = _requirements_stamp(root)
     if recorded == current:
         return False
-    if unreadable:
-        # 记录在却读不了：当成没装过，每次启动都要跑一遍 pip；记录要是也写不进去，就次次如此。
-        # 和清单本身读不了一样不补装（requirements_file_digest 返回 None 那一路）
-        _note_unreadable_stamp(root, unreadable)
-        return False
     attempt = _read_json(venv / REQ_ATTEMPT)
+    if attempt and attempt.get("digest") == current and attempt.get("ok") is True:
+        # 这份清单装成功过，只是安装记录没写成、读不回（write_requirements_stamp）
+        return False
+    if unreadable:
+        # 记录在却读不了，尝试记录里也没记过这份清单装成功：不知道装没装过，补装一次。装成功后
+        # write_requirements_stamp 记进尝试记录，之后不再补装；清单再变、或程序缺模块起不来
+        # （forget_requirements_failure 删掉尝试记录）照旧补装。不能一律不装：手动更新带来的新依赖、
+        # 锁的版本变了，就只有这里会装
+        _note_unreadable_stamp(root, unreadable)
     if attempt and attempt.get("digest") == current:
         at = _as_float(attempt.get("at"))
         now = time.time() if now is None else now

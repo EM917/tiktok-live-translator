@@ -1525,28 +1525,42 @@ class CommentGuardMixin:
         key = msg.get("key")
         key_saved = isinstance(key, str) and bool(key.strip())
         if key_saved:
-            from .translator import saved_keys
-            keys = saved_keys()
-            keys[self.ENGINE_KEY_ENV["claude"]] = key.strip()
-            self._save_setting("api_keys", keys)
+            from .translator import update_saved_keys
+            update_saved_keys({self.ENGINE_KEY_ENV["claude"]: key.strip()})    # 只合这一把，别的密钥不动
             await self._publish_engine()
-        new = dict(guard.cfg)
+        changes = {}
         if isinstance(msg.get("enabled"), bool):
-            new["enabled"] = msg["enabled"]
+            changes["enabled"] = msg["enabled"]
         if msg.get("backend") in BACKENDS:
-            new["backend"] = msg["backend"]
+            changes["backend"] = msg["backend"]
         if isinstance(msg.get("weak"), bool):
-            new["weak"] = msg["weak"]
+            changes["weak"] = msg["weak"]
+        new = dict(guard.cfg, **changes)
         if new == guard.cfg and not key_saved:
             return
         if new != guard.cfg:
-            guard.cfg = new
-            self._save_setting(SETTINGS_KEY, dict(new))
+            guard.cfg = self._save_guard_changes(changes, new)
         guard.configure_reviewer()                  # 选了 Claude 且有密钥就备好后端；换了密钥就按新密钥重来
         if guard.effective_enabled() and guard.rules is None:
             loop = asyncio.get_running_loop()
             guard.rules = await loop.run_in_executor(None, cg.load_rules)
         await self._publish_comment_guard_config(reset=False)       # 只是状态变了：上一场的事件和名单不动
+
+    def _save_guard_changes(self, changes, new):
+        """把页面这次改的几项（changes）写进设置文件，返回此后的 guard.cfg。
+
+        以文件里此刻的这一项为底，不是内存里的 guard.cfg：guard.cfg 只在启动时读一次，那时设置文件读不出来，
+        它就是默认值；文件后来又读得出来了（权限改回来、别的程序放开了它），拿默认值整项写回，用户原来选的复核
+        后端、弱提示就被盖掉了。文件里没有这一项时以内存里的为底。读不出来、没写成时照旧只改内存（new）。"""
+        merged = {}
+
+        def apply(saved):
+            base = normalize_settings(saved) if saved is not None else dict(self.guard.cfg)
+            merged.update(base, **changes)
+            return dict(merged)
+
+        self._update_setting(SETTINGS_KEY, apply)
+        return dict(merged) if merged else new
 
 
 def guard_notice(code):

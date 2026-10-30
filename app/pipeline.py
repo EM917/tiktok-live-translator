@@ -33,7 +33,7 @@ from .reconnect_policy import REUSE_MODES, session_start_fields as reconnect_ses
 from .redact import strip_query
 from .settings import (load_settings, normalize_caption_size, push_recent_room,
                        recent_rooms, save_setting, save_streamer_brand,
-                       saved_caption_size, streamer_brands)
+                       saved_caption_size, streamer_brands, update_setting)
 from .telemetry import Telemetry
 from .translator import (ENGINE_KEY_ENV, REPLY_RETRIES, begin_translate_call,
                          create_translator, engine_is_claude, looks_like_reply,
@@ -969,7 +969,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         if commits:
             marker["from"] = commits.get("from")
             marker["to"] = commits.get("to")
-        save_setting("resume_after_update", marker)
+        if not save_setting("resume_after_update", marker):
+            # 没写进去（设置文件读不出来时不写，见 settings.save_setting）：返回 False，更新器就不说「重启后自动恢复监听」
+            print("[警告] 「重启后接着监听」的记号没写进设置文件：重启后不会自动接着监听，要在页面里重新开始")
+            return False
         return True
 
     async def resume_after_update(self, now=None):
@@ -1108,6 +1111,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     def _save_setting(self, key, value):
         """把界面偏好写进 settings.json（重启后 main.py 读回）。"""
         save_setting(key, value)
+
+    def _update_setting(self, key, change):
+        """同上，只改这一项里的一部分：按文件里此刻的值改（settings.update_setting），返回写没写成。"""
+        return update_setting(key, change)
 
     # ---- 直播任务管理 ----
     # 加锁的原因：多个页面/标签页可能同时连着服务，两条 start 消息并发进来时，
@@ -5264,7 +5271,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         还是绿的。
         """
         from .settings import save_setting
-        from .translator import TRANSLATOR_CHOICES, WORKSPACE_ENV, WORKSPACE_ID_RE, saved_keys
+        from .translator import (TRANSLATOR_CHOICES, WORKSPACE_ENV, WORKSPACE_ID_RE, saved_keys,
+                                 update_saved_keys)
 
         if engine not in TRANSLATOR_CHOICES:
             return
@@ -5277,21 +5285,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 "the Workspaces page in the Claude Console. Nothing was saved. Check it and click "
                 "Save again.")})
             return
-        keys = saved_keys()
-        changed = False
+        # 只交改动的那几把，合并在设置文件的锁里做（update_saved_keys）：不拿这里读到的整份 api_keys 写回
+        edits = {}
         if key:
             env = self.ENGINE_KEY_ENV.get(engine)
             if env:
-                keys[env] = key.strip()
-                changed = True
-        if workspace is not None and keys.get(WORKSPACE_ENV, "") != workspace:
-            if workspace:
-                keys[WORKSPACE_ENV] = workspace
-            else:
-                keys.pop(WORKSPACE_ENV, None)
-            changed = True
-        if changed:
-            save_setting("api_keys", keys)
+                edits[env] = key.strip()
+        if workspace is not None and saved_keys().get(WORKSPACE_ENV, "") != workspace:
+            edits[WORKSPACE_ENV] = workspace or None         # 空串：清掉
+        if edits:
+            update_saved_keys(edits)
             self._anthropic_keys_saved()     # 弹幕留意的复核用同一把密钥和工作区 ID（pipeline_guard.py）
         missing = await self._local_model_missing(engine)
         if missing is not None:

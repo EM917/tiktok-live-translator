@@ -2,6 +2,7 @@
 
 只依赖标准库——启动自举阶段（依赖还没装齐时）也要能安全导入。
 """
+import copy
 import json
 import math
 import os
@@ -206,16 +207,20 @@ def push_recent_room(streamer, url, limit=RECENT_ROOMS_MAX):
     url = (url or "").strip()
     if not streamer or not url:
         return recent_rooms()
-    data = load_settings()
-    items = data.get("recent_rooms")
-    items = [x for x in items if isinstance(x, dict)] if isinstance(items, list) else []
-    # 同名的旧记录先剔掉，再把这一条放到最前
-    items = [x for x in items if x.get("streamer") != streamer]
-    items.insert(0, {"streamer": streamer, "url": url[:500],
-                     "at": datetime.now().isoformat(timespec="seconds")})
-    items = items[:max(1, int(limit))]
-    save_setting("recent_rooms", items)
-    return items
+    entry = {"streamer": streamer, "url": url[:500],
+             "at": datetime.now().isoformat(timespec="seconds")}
+    out = {}
+
+    def put_first(items):
+        items = [x for x in items if isinstance(x, dict)] if isinstance(items, list) else []
+        # 同名的旧记录先剔掉，再把这一条放到最前
+        items = [x for x in items if x.get("streamer") != streamer]
+        out["items"] = ([entry] + items)[:max(1, int(limit))]
+        return list(out["items"])
+
+    update_setting("recent_rooms", put_first)
+    # 设置文件读不出来时没有读到原有的列表：交回只有这一条的（和那时 recent_rooms() 读到空列表一致），文件不动
+    return out["items"] if "items" in out else put_first(None)
 
 
 def recent_rooms(limit=RECENT_ROOMS_MAX):
@@ -233,25 +238,30 @@ def recent_rooms(limit=RECENT_ROOMS_MAX):
 # 按主播记住「本场品牌」选的品牌词表。键是主播用户名（小写），值是品牌 id；
 # 空串表示「不限」，写空串时直接删掉这个键（不留一条「不限」的记录，
 # 没记过和记了「不限」在读取时是同一件事）。读/改/写模式与「最近直播间」
-# 那组函数一致：先读全部设置，取出这一项的映射，改动单个主播的那一条，
-# 再整体写回——不能直接 save_setting("brands.allura", ...)，settings.json
+# 那组函数一致：取出这一项的映射，改动单个主播的那一条，再整体写回（update_setting，
+# 读改写在同一把锁里）——不能直接 save_setting("brands.allura", ...)，settings.json
 # 里没有嵌套路径这种写法。
 def save_streamer_brand(streamer, brand):
     """记住（或清除）某个主播这场选的品牌词表，返回更新后的完整映射。"""
     streamer = str(streamer or "").strip().lower()
     if not streamer:
         return streamer_brands()
-    data = load_settings()
-    raw = data.get("brands")
-    brands = ({k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
-              if isinstance(raw, dict) else {})
     brand = str(brand or "").strip()
-    if brand:
-        brands[streamer] = brand
-    else:
-        brands.pop(streamer, None)     # 「不限」：不留占位记录
-    save_setting("brands", brands)
-    return brands
+    out = {}
+
+    def set_one(raw):
+        brands = ({k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
+                  if isinstance(raw, dict) else {})
+        if brand:
+            brands[streamer] = brand
+        else:
+            brands.pop(streamer, None)     # 「不限」：不留占位记录
+        out["brands"] = brands
+        return dict(brands)
+
+    update_setting("brands", set_one)
+    # 设置文件读不出来：同 push_recent_room，交回只按这一条算的映射，文件不动
+    return out["brands"] if "brands" in out else set_one(None)
 
 
 def streamer_brands():
@@ -274,19 +284,46 @@ def save_setting(key, value):
         if not writable:
             return False
         data[key] = value
-        try:
-            tmp = SETTINGS_FILE.with_suffix(".json.tmp")
-            fd = _create_private(tmp)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(json.dumps(data, ensure_ascii=False, indent=2))
-                f.flush()
-                # 先落盘再替换：写完就断电时，不至于换上一个 0 字节的 settings.json
-                os.fsync(f.fileno())
-            # 换上去的就是刚建的这个 0600 文件：升级前就是 0644 的 settings.json 随之被替掉，不用再 chmod
-            os.replace(tmp, SETTINGS_FILE)
-        except OSError:
+        return _write(data)
+
+
+def update_setting(key, change):
+    """改单个设置项，读、改、写在同一把锁里一步做完：change 拿到文件里这一项此刻的值（一份拷贝；没有这一项
+    是 None），返回新值。返回写没写成；新值和文件里的一样就不写，也算成。文件在、却读不出来时同 save_setting，
+    不写，change 也不调。
+
+    给「这一项是个集合、每次只改其中一条」的写手用：api_keys（translator.update_saved_keys）、最近直播间、
+    按主播记的品牌、弹幕留意的设置。以前它们先在锁外 load_settings() 读一次，改一条再交给 save_setting
+    整项写回：锁外那次读碰上一下就过去的读错误（Windows 上别的程序正占着文件）拿到的是 {}，锁里那次又读出来了，
+    写回去的这一项就只剩新的那一条——别的密钥、最近直播间全没了。
+
+    change 在锁里跑：里面不能再调 save_setting / update_setting（锁不可重入），也别做慢事。"""
+    with _save_lock:
+        data, writable = _load()
+        if not writable:
             return False
-        return True
+        value = change(copy.deepcopy(data.get(key)))
+        if key in data and data[key] == value:
+            return True
+        data[key] = value
+        return _write(data)
+
+
+def _write(data):
+    """把整份设置原子地换上去，返回写没写成。调用方拿着 _save_lock。"""
+    try:
+        tmp = SETTINGS_FILE.with_suffix(".json.tmp")
+        fd = _create_private(tmp)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False, indent=2))
+            f.flush()
+            # 先落盘再替换：写完就断电时，不至于换上一个 0 字节的 settings.json
+            os.fsync(f.fileno())
+        # 换上去的就是刚建的这个 0600 文件：升级前就是 0644 的 settings.json 随之被替掉，不用再 chmod
+        os.replace(tmp, SETTINGS_FILE)
+    except OSError:
+        return False
+    return True
 
 
 def _create_private(tmp):

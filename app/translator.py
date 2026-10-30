@@ -61,6 +61,25 @@ def saved_keys():
     return dict(keys) if isinstance(keys, dict) else {}
 
 
+def update_saved_keys(edits):
+    """把 edits 里的几把密钥合进 settings.json 的 api_keys（值是 None 的删掉），返回写没写成。
+
+    读、改、写在设置文件的同一把锁里一步做完（settings.update_setting）。以前是 saved_keys() 读一次、改一把、
+    整项写回：那次读碰上一下就过去的读错误时拿到的是空的，写回去 api_keys 就只剩这一把，别的密钥全没了。"""
+    from .settings import update_setting
+
+    def merge(keys):
+        keys = dict(keys) if isinstance(keys, dict) else {}
+        for name, value in edits.items():
+            if value is None:
+                keys.pop(name, None)
+            else:
+                keys[name] = value
+        return keys
+
+    return update_setting("api_keys", merge)
+
+
 def mask_key(val):
     """给界面看的形态：只留尾四位，其余打码。"""
     if not val:
