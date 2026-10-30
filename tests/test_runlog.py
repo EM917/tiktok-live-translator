@@ -20,6 +20,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 import traceback
 from pathlib import Path
 from types import SimpleNamespace
@@ -172,6 +173,33 @@ def test_ordinary_lines_pass_through_untouched(line):
 def test_urls_keep_only_scheme_host_and_path_like_strip_query():
     line = "https://pull-flv-l1.tiktokcdn.com/stage/stream-1.flv?expire=1790000000&sign=SECRETSIGN"
     assert scrub_secrets(line) == strip_query(line) == "https://pull-flv-l1.tiktokcdn.com/stage/stream-1.flv"
+
+
+@pytest.mark.parametrize("prefix", ["拉流失败", "地址", "url_", "8"])
+def test_a_url_glued_to_the_word_before_it_still_loses_its_query(prefix):
+    """中文、数字、下划线紧贴着协议名时（「拉流失败https://…」）中间没有词边界：以前协议名前要求 \\b，
+    这种地址的签名、代理口令原样留下。"""
+    signed = prefix + "https://pull-flv-l1.tiktokcdn.com/stage/stream-1.flv?expire=1790000000&sign=SECRETSIGN"
+    assert scrub_secrets(signed) == strip_query(signed) == \
+        prefix + "https://pull-flv-l1.tiktokcdn.com/stage/stream-1.flv"
+    proxy = prefix + "https://someone:" + F["password"] + "@proxy.example.com:8080"
+    _assert_no_secret(scrub_secrets(proxy))
+
+
+# 一长串字母、数字和 . - + 连在一起，中间没有空白：每个字母前都是词边界
+LONG_RUNS = {"dash": "x-" * 32000, "dot": "a." * 32000, "mixed": "ab-cd." * 11000, "version": "v1.2-rc+" * 8000}
+
+
+@pytest.mark.parametrize("name", sorted(LONG_RUNS))
+def test_a_long_run_of_short_words_is_scrubbed_in_linear_time(name):
+    """每一行都在打印它的线程里、拿着运行日志的锁过 scrub_secrets，别的线程（包括事件循环）的 print 都等着。
+    协议名写成不设上限的 \\b[a-z][a-z0-9+.-]*:// 时，这种串里每个词边界都往后扫到串尾再退回来找 ://，耗时是
+    行长的平方：64 KB 的一行要十秒左右（2026-10-29 本机实测）。设了上限以后是几十毫秒。"""
+    text = LONG_RUNS[name]
+    started = time.perf_counter()
+    assert scrub_secrets(text) == text
+    assert strip_query(text) == text
+    assert time.perf_counter() - started < 1.0
 
 
 def test_none_and_non_strings():
@@ -398,7 +426,6 @@ def test_a_writer_follows_the_file_after_another_writer_rotated_it(tmp_path):
 def test_a_held_rotation_lock_never_blocks_the_print(tmp_path):
     """别的进程拿着轮转锁不放（停在调试器里）：这次不轮转、接着写这一份，不能卡住打印——print 跑在事件循环里。"""
     import fcntl
-    import time
 
     path = tmp_path / runlog.FILE_NAME
     f = runlog.RotatingFile(path, max_bytes=100, backups=3)
