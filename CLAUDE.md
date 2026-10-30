@@ -149,7 +149,9 @@ python3 tools/replay_alerts.py
   中英两种界面下审计和终端逐字节相同。主播名、词条、字幕和弹幕内容是数据，不翻
 - **闸与迁移**：`I18N_ENABLED` 是发布闸。开闸后第一次启动往 `settings.json` 写一次
   `ui_lang`：已有 `settings.json`、或 `.venv` 装成功过（有 `.requirements.sha256`）的老装机
-  写 `zh`，只有新装写 `system`（跟系统语言）——用户定的，老用户升级后界面不许突然变英文。
+  写 `zh`——用户定的，老用户升级后界面不许突然变英文。新装看系统首选语言列表：首项不是中文、
+  列表里却有中文的也写 `zh`（用户 10-29 定，中文中控的 Mac 常把 English 排第一），其余新装写
+  `system`（跟系统语言）。
   光有 `.venv` 不算：`setup.sh` 和装到一半中断的第一次启动都会先留下它。`boot()` 只读，
   `settle()` 在 exec 之后的最终进程里才写：提前碰设置文件，损坏备份的提示会随
   exec 丢掉。回退就是把闸改回 `False`。测闸某一边的语义要显式 `monkeypatch` 它：
@@ -161,5 +163,9 @@ python3 tools/replay_alerts.py
   只有一种英文）、G4（覆盖），看退出码；其余的闸在普通 pytest 和 `node --test` 里。
   新的界面文件要在文件头标 `i18n: done`、加进 `tests/i18n_rules.py` 的 `UI_FILES`，
   两边对不上 G4 就红。G10（英文页扫 DOM、量顶栏宽度）要开无头 Chrome：
-  `TLT_DOM_SCAN=1 pytest tests/test_i18n_dom.py -q`。先 `pgrep -f tiktokcdn`，
-  **直播转写进行中不开**，交给 PR 的 CI dom-scan（macOS 跑器）
+  `TLT_DOM_SCAN=1 pytest tests/test_i18n_dom.py -q`。先过直播闸 `tools/livecheck.py`，写在同一条
+  命令里：`python3 -I tools/livecheck.py | grep -qx idle || { echo GATE-SKIP; exit 0; };`
+  打出 GATE-SKIP（在拉直播流、闪购助手在续开、同传开着）就**不开**，交给 PR 的 CI dom-scan（macOS 跑器）。
+  只有它明确答 `idle` 才跑：脚本不在（基点早于它的 worktree）、`python3` 起不来、不在仓库根目录，
+  一律当成不能跑，别换回「grep 到 live stream 才停」的写法，那样闸自己坏了就等于放行。
+  它问闪购助手时只读 9334 的 `GET /status`：这是 agent 碰 9333、9334 的**唯一例外**，别的请求一律不发

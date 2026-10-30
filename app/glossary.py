@@ -405,7 +405,7 @@ def load(path=None, streamer=None, brand=None):
     这样用户编辑不会挡住一键更新）。
 
     传入 streamer（主播用户名）时，会把 profiles/<主播>.txt 合并进来且优先。
-    商品知识是逐主播的：把 Bella 的品名装进全局表，Elisa 的直播里就会凭空
+    商品知识是逐主播的：把 Allura 的品名装进全局表，Noelia 的直播里就会凭空
     冒出别家商品（实测发生过——「凭空多出 D3 K2」在盲评里被判成捏造）。
 
     传入 brand（品牌 id）时，会把 brands/<品牌>.txt 也合并进来，优先级在全局表

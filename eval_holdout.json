@@ -14,16 +14,19 @@
     "",
     "任何一层的移出都必须有书面理由，并重新评估所有已训练模型。",
     "训练侧工具（mine / annotate / export / train）读不到或读不懂本文件时",
-    "必须直接退出（fail-closed），绝不允许静默继续。"
+    "必须直接退出（fail-closed），绝不允许静默继续。",
+    "",
+    "streamers 的键可以写成 sha256:<主播用户名 UTF-8 编码的 sha256，64 位小写十六进制>：",
+    "真实主播名不进公开仓库。app/provenance.py 两种写法都认，按名字查时先比明文、再比哈希。"
   ],
   "frozen_at": "2026-08-27",
   "dev_eval": {
     "sessions": {
       "session-20260826-133138.jsonl": "260 对盲评考卷来源（fidelity 与可读性两轮已评级），已被反复分析、据其定过候选家族与权重——training-excluded dev benchmark",
-      "session-20260827-192219.jsonl": "Daisy 晚场，约定将做全场评级——按『评级前冻结』规则在评级开始之前加入"
+      "session-20260827-192219.jsonl": "Marisol 晚场，约定将做全场评级——按『评级前冻结』规则在评级开始之前加入"
     },
     "streamers": {
-      "elisa._martinez": "推动过 source lock / profile isolation / glossary 重设计的分析对象——training-excluded dev benchmark，兼未见主播泛化参考"
+      "sha256:8c80b6e0ec0aa59dab34d7c57abd3fc62844f4adb11aff5eecf7b0099609a99f": "推动过 source lock / profile isolation / glossary 重设计的分析对象——training-excluded dev benchmark，兼未见主播泛化参考"
     }
   },
   "sealed_test": {

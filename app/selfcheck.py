@@ -40,8 +40,18 @@ NAMES = {"ffmpeg": L("音频组件 ffmpeg", "Audio (ffmpeg)"), "denoise": L("人
          "disk": L("磁盘空间", "Storage")}
 
 
-def _check(name, level, detail, fix=""):
-    return {"name": name, "level": level, "detail": detail, "fix": fix}
+# 自检行上可以点的那一下：值是页面要发回来的控制指令（handle_control 的 mtype），页面据此画按钮
+ACTION_DOWNLOAD_ASR = "download_asr_model"
+
+
+def _check(name, level, detail, fix="", action=None, size_mb=None, busy=False):
+    """一行自检。action 是这一行上能点的那一下（目前只有 ACTION_DOWNLOAD_ASR：待机时提前下载识别模型，
+    见 app/pipeline_asr_fetch.py）；带 action 时一起带上 size_mb（按钮上写多大，不知道是 None）和
+    busy（正在做，按钮置灰）。没有 action 的行和以前逐字节相同。审计只记 name / level / detail。"""
+    row = {"name": name, "level": level, "detail": detail, "fix": fix}
+    if action:
+        row.update(action=action, size_mb=size_mb, busy=bool(busy))
+    return row
 
 
 async def _to_thread(fn, *args):
@@ -165,17 +175,16 @@ async def check_asr(args, state=None):
                       L("确认网络和磁盘空间后点「开始翻译」重试；若反复出现，关闭程序重新打开",
                         "Check your network connection and available storage, then click Start "
                         "to try again. If this keeps happening, quit and reopen the app."))
-    backend = getattr(args, "backend", "auto")
     try:
-        from .hwdetect import recommend
-        # device 必须一起传：recommend 把 backend/model/device/compute_type 当成
-        # 一组互相牵连的值重算。少传 device，自检算出的就不是待会儿真正要加载的
-        # 那套配置——报「ct2 + large-v3」而管线加载的是别的，等于白检。
-        rec = recommend(backend=backend, device=getattr(args, "device", "auto"))
+        from .asr import asr_plan
+        # 和开播时（_run_session）、待机提前下载（pipeline_asr_fetch）用同一份推导：device 必须一起传，
+        # recommend 把 backend/model/device/compute_type 当成一组互相牵连的值重算。少传 device，自检算出的
+        # 就不是待会儿真正要加载的那套配置——报「ct2 + large-v3」而管线加载的是别的，等于白检。
+        rec = asr_plan(args)
     except Exception as exc:
         return _check(NAMES["asr"], FAIL,
                       L("硬件探测失败：{}", "Couldn’t detect the hardware: {}").format(of(exc)))
-    model = getattr(args, "model", None) or rec["model"]
+    model = rec["model"]
     # 这几个库第一次 import 要几百毫秒到一秒，放线程里做——run_selfcheck 特意
     # 挂在后台就是为了不挡住界面，在协程里同步 import 等于白挂
     if rec["backend"] == "mlx":
@@ -191,10 +200,19 @@ async def check_asr(args, state=None):
                       L("关闭程序后重新打开，会自动补装",
                         "Quit and reopen the app to install it automatically."))
     cached = _model_cached(model, rec["backend"])
-    detail = L("{} + {}（{}）", "{} + {} ({})").format(
-        rec["backend"], model,
-        L("模型已下载", "model downloaded") if cached
-        else L("首次开播需先下载模型", "model downloads when you first click Start"))
+    fetching = bool(state.get("fetching"))
+    size_mb = _model_size_mb(model)
+    size = _size_text(size_mb)
+    if cached:
+        state_text = L("模型已下载", "model downloaded")
+    elif fetching:
+        state_text = (L("正在下载模型，{}", "model downloading, {}").format(size) if size
+                      else L("正在下载模型", "model downloading"))
+    else:
+        # 写上多大（2026-10-29 新装机：large-v3 约 3.1 GB，第一次点开始才下，直播已经开始了）
+        state_text = (L("模型还没下载，{}", "model not downloaded yet, {}").format(size) if size
+                      else L("模型还没下载", "model not downloaded yet"))
+    detail = L("{} + {}（{}）", "{} + {} ({})").format(rec["backend"], model, state_text)
 
     # Apple Silicon 却在用 CPU 后端 = 这台机器的能力只发挥了一小部分。
     # 实测（hwdetect）CPU 跑 turbo 的 RTF 是 0.99——勉强跟得上，跑久了必然积压，
@@ -238,7 +256,32 @@ async def check_asr(args, state=None):
                         "{}. It’s slow, and long sessions tend to build a backlog.").format(detail),
                       L("换成 Apple 芯片原生的 Python：", "Switch to a Python built for Apple silicon. ")
                       + python_switch_steps())
-    return _check(NAMES["asr"], OK if cached else WARN, detail)
+    if cached:
+        return _check(NAMES["asr"], OK, detail)
+    # 待机时就能下：这一行带一个「现在下载」（web/app.js renderSelfcheck 画按钮，点了发 download_asr_model）。
+    # 上面两种 WARN（Apple 芯片却在用 CPU、Rosetta）不带：那时要做的是换后端 / 换 Python，换了之后要的是
+    # 另一个模型，现在下的用不上
+    fix = "" if fetching else L(
+        "开播前在这里点「现在下载」；不点的话，第一次点「开始翻译」时才下载，字幕要等它下完",
+        "Click Download Now here before you go live. Otherwise it downloads the first time you click "
+        "Start, and captions wait until it finishes.")
+    return _check(NAMES["asr"], WARN, detail, fix, action=ACTION_DOWNLOAD_ASR, size_mb=size_mb,
+                  busy=fetching)
+
+
+def _model_size_mb(model):
+    """识别模型的大致下载体积（MB，app/asr.py MODEL_SIZES_MB）；不在表里（直接给的 HF 仓库名）是 None。"""
+    from .asr import MODEL_SIZES_MB
+    return MODEL_SIZES_MB.get(model)
+
+
+def _size_text(size_mb):
+    """「约 3.1 GB」「约 484 MB」；不知道多大是 None。和开播时「正在加载语音识别模型」那句同一种写法。"""
+    if not size_mb:
+        return None
+    if size_mb >= 1000:
+        return L("约 {:.1f} GB", "about {:.1f} GB").format(size_mb / 1000)
+    return L("约 {} MB", "about {} MB").format(size_mb)
 
 
 def _hub_dirs():
@@ -252,7 +295,7 @@ def _hub_dirs():
 
 
 # faster-whisper 的短名→仓库映射：turbo 不在 Systran 名下，猜前缀会查错目录，
-# 模型明明下全了自检却一直 WARN「首次开播需先下载模型」
+# 模型明明下全了自检却一直 WARN「模型还没下载」
 _CT2_REPOS = {"large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
               "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
               "distil-large-v3": "Systran/faster-distil-whisper-large-v3"}
@@ -675,20 +718,23 @@ async def check_resolver():
                   L("在 Chrome/Safari 里登录一次 TikTok", "Sign in to TikTok once in Chrome or Safari."))
 
 
-async def check_browser_login():
+async def check_browser_login(cookies_browser="auto"):
     """有的直播间 TikTok 只把流地址给登录了的观众，那时程序要借浏览器里的 TikTok 登录。
     这一行只看两件事：各浏览器的 cookie 库**读不读得到**、里面有没有登录 cookie 的**名字**。
 
     绝不解密、绝不调 yt-dlp 的读取函数：解密 Chrome 的 cookie 值要向钥匙串要密钥，
     启动自检会因此弹对话框。2026-09-17 实测 macOS 27 上两个浏览器都是系统拒绝读取，
-    而当时界面上没有任何一行说这件事。"""
-    return (await browser_login_state())[1]
+    而当时界面上没有任何一行说这件事。
+
+    cookies_browser 是命令行的 --cookies-browser（run_all 照 args 给）：登录优先那一步读哪个浏览器由它和设置里的
+    cookies_browser_only 定，这一行按同一个规矩判（_browser_login_row 的 first）。"""
+    return (await browser_login_state(cookies_browser))[1]
 
 
-async def browser_login_state():
+async def browser_login_state(cookies_browser="auto"):
     """(各浏览器的观察 {浏览器: 代码}, 自检「浏览器登录态」那一行)。启动自检和「我加好了，再查一次」
     （pipeline._recheck_browser_login）共用：只用 browser_login.probe，不解密、不碰钥匙串（读 Safari 实测 0.0 秒）。
-    不是 macOS 时观察为空，那一行是「本机不适用」。"""
+    不是 macOS 时观察为空，那一行是「本机不适用」。cookies_browser 同 check_browser_login。"""
     import sys
 
     from . import browser_login as bl
@@ -698,21 +744,37 @@ async def browser_login_state():
                           L("这一项只检查 macOS 上的浏览器数据读取权限，本机不适用",
                             "This check only covers reading browser data on macOS. It doesn’t apply "
                             "to this computer."))
-    from .resolver import _installed_browsers
+    from .resolver import _installed_browsers, _login_first_browsers
     browsers = await _to_thread(_installed_browsers)
+    first = await _to_thread(_login_first_browsers, cookies_browser)
     observed = {}
     for browser in browsers:
         observed[browser] = await _to_thread(bl.probe, browser)
-    return observed, _browser_login_row(observed)
+    # 走到这里一定是 macOS：带「完全磁盘访问权限」那几步时，那几步旁边画按钮（_browser_login_row 的 buttons）
+    return observed, _browser_login_row(observed, first, buttons=bl.fda_buttons_here())
 
 
-def _browser_login_row(observed):
+def _browser_login_row(observed, first=("safari",), buttons=False):
     """{浏览器: 代码} → 自检的一行。大多数直播间不登录也能解析，所以借不到只是 WARN。
 
-    带「完全磁盘访问权限」那几步时（有浏览器被系统拒绝读取、又没有哪个读到登录）多一个 recheck=True：页面在这一行
-    下面画「我加好了，再查一次」（web/app.js renderSelfcheck），点了发 recheck_browser_login。别的浏览器读到登录时
-    这一行是「通过」、不带步骤，也就不画这个按钮（这时要不要也给步骤还没定）。审计只记名字、
-    等级和详情（audit.selfcheck），这个键不进审计。"""
+    first 是登录优先那一步要读的浏览器（resolver._login_first_browsers：没点名时只有 Safari，点了名就是那一个，
+    --cookies-browser none 时为空）。默认值是没点名时的样子，测试和别处直接拿观察造行时用。
+
+    带「完全磁盘访问权限」那几步时多一个 recheck=True：页面在这一行下面画「我加好了，再查一次」（web/app.js
+    renderSelfcheck），点了发 recheck_browser_login。两种情况带这几步：
+      * 有浏览器被系统拒绝读取、又没有哪个读到登录；
+      * 别的浏览器读到了登录，登录优先那一步要读的却被系统拒绝读取（login-5，用户 2026-10-29 选 A）。以前这时
+        这一行是「通过」、不带步骤：新 Mac 授权之前就是「Safari：系统拒绝读取；Chrome：读到了 TikTok 登录」，
+        登录优先那一步每次解析都跳过，中控点「开始翻译」之前看不到任何授权提示，要等第一次解析完窗口顶部才挂出那条
+        带步骤的提示。现在是「提醒」（摘要「通过 · 1 项提醒」；提醒不自己展开，web/app.js nextAutoOpen）。这种情况
+        步骤只按被拒的那一步给（「在 Chrome（或 Safari）里登录」不相干），之后和第一种走同一段：按钮之类挂在这一行
+        上的东西两种情况都带。detail 照旧列各浏览器，多一句那一步只读谁、读不了就跳过——只写程序自己怎么走，不说
+        Chrome 的登录对哪类直播间管不管用（第八条：那天授权前后两段不是同一分钟配对）。
+    审计只记名字、等级和详情（audit.selfcheck），recheck 不进审计。
+
+    buttons=True（browser_login_state，只在 macOS 上走到）：那几步按按钮写（browser_login.fda_steps(buttons=True)），
+    这一行再多一个 fda（{按钮: 那一行}，browser_login.fda_button_lines），页面把「打开完全磁盘访问设置」「在访达里
+    选中 Python」（从终端启动时还有「在访达里选中终端」）接在对应的那一行后面。fda 同样不进审计。"""
     from . import browser_login as bl
 
     name = NAMES["browser_login"]
@@ -731,12 +793,30 @@ def _browser_login_row(observed):
                       L("这次运行没有读取浏览器数据（测试环境或 TLT_NO_BROWSER）",
                         "Browser data wasn’t read this run (test environment or TLT_NO_BROWSER)"))
     detail = bl.observed_text(observed)
+    refused = {b: observed[b] for b in first if observed.get(b) == bl.BLOCKED}
+    if refused and bl.OK in observed.values():
+        # 下面只按被拒的那一步判等级、给步骤（login-5）
+        detail += _first_step_skipped(refused)
+        observed = refused
     if any(code == bl.OK for code in observed.values()):
         return _check(name, OK, detail)
-    row = _check(name, WARN, detail + scope, bl.steps_text(observed))
-    if bl.BLOCKED in observed.values():
+    blocked = bl.BLOCKED in observed.values()
+    row = _check(name, WARN, detail + scope, bl.steps_text(observed, buttons=buttons and blocked))
+    if blocked:
         row["recheck"] = True
+        if buttons:
+            row["fda"] = bl.fda_button_lines()
     return row
+
+
+def _first_step_skipped(refused):
+    """接在 observed_text 后面的那一句：登录优先那一步只读哪个浏览器、读不了就跳过（_browser_login_row）。
+    术语照 docs/i18n-style.md「登录优先这一步」那一行。英文不带句末句号：后面接的 scope 以「. Only…」开头。"""
+    from . import browser_login as bl
+
+    return L("。解析流地址时，登录优先这一步只读 {} 里的 TikTok 登录，读不了就跳过这一步",
+             ". When looking up the stream URL, the app first reads the TikTok sign-in from {} only and skips "
+             "that step when it can’t read it").format(L("、", ", ").join(bl.label(b) for b in refused))
 
 
 def python_switch_steps(darwin=None):
@@ -749,9 +829,10 @@ def python_switch_steps(darwin=None):
     从 python.org 装。重装组件约 1.4 GB（INSTALL_NEED_GB 里「运行环境」那一份）。
     macOS 的「完全磁盘访问权限」按解释器文件登记（browser_login.fda_targets）：换了 Python，新的
     那个不在列表里，TikTok 要求登录才给流地址的直播间就拿不到流——要提醒重新授权一次（审查小问题）。
-    路径和步骤以前指向「浏览器登录态」那一行，可那一行只要别的浏览器读到了登录就是「通过」、不带步骤
+    路径和步骤以前指向「浏览器登录态」那一行，可那一行当时只要别的浏览器读到了登录就是「通过」、不带步骤
     （2026-10-29 新 Mac 上就是这样）。登录优先那一步被系统拒绝读取时，点「开始翻译」后窗口顶部一定会挂出
-    那条带路径和步骤的提示（browser_login.no_login_notice），所以指向它。"""
+    那条带路径和步骤的提示（browser_login.no_login_notice），所以指向它。login-5 之后那一行在这种情况下也带步骤了，
+    指向不改：直播中设置分组整块收着，那一行看不见，顶部那条看得见。"""
     import sys
     darwin = sys.platform == "darwin" if darwin is None else darwin
     steps = L("从 python.org 下载安装 Python 3.10 或更新版本；装好之后完全退出程序，删掉程序文件夹里的 "
@@ -971,7 +1052,7 @@ async def run_all(args, detector=None, glossary=None, translator=None, asr_state
         (NAMES["glossary"], check_glossary(glossary)),
         (NAMES["audit"], check_audit()),
         (NAMES["resolver"], check_resolver()),
-        (NAMES["browser_login"], check_browser_login()),
+        (NAMES["browser_login"], check_browser_login(getattr(args, "cookies_browser", "auto"))),
         (NAMES["comments"], check_comments(args)),
         (NAMES["disk"], check_disk()),
     ]

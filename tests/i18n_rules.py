@@ -37,10 +37,10 @@ UI_FILES = (
     "app/browser_login.py", "app/comment_redo.py", "app/comment_source.py", "app/comments.py",
     "app/detector.py",
     "app/diskspace.py", "app/ffmpeg_bin.py", "app/float_window.py", "app/hwdetect.py",
-    "app/localmodel.py",
+    "app/instance.py", "app/localmodel.py",
     "app/macbrand.py", "app/native_dialog.py", "app/pipeline.py", "app/pipeline_disk.py",
     "app/pipeline_engine.py", "app/pipeline_flash.py", "app/pipeline_float.py", "app/pipeline_guard.py",
-    "app/pipeline_stream.py", "app/pipeline_transcript.py", "app/power.py",
+    "app/pipeline_asr_fetch.py", "app/pipeline_stream.py", "app/pipeline_transcript.py", "app/power.py",
     "app/resolver.py", "app/selfcheck.py",
     "app/transcript_export.py",
     "app/translator.py", "app/update_guard.py", "app/updater.py", "app/viewer.py",
@@ -87,7 +87,8 @@ NON_UI_CHINESE = {
         "训练侧工具（tools/ 下的 mine、annotate、bench_live 等）读冻结评测清单失败时的说明："
         "strict 时 SystemExit 打到终端，否则拼进以 [警告] 开头的终端行": (
             "eval_holdout.json {}——训练侧管线拒绝在没有冻结清单的情况下运行", "读取失败（{}）",
-            "schema 不合法（缺 dev_eval / sealed_test 两层）", "schema 不合法（{}.{} 必须是对象）"),
+            "schema 不合法（缺 dev_eval / sealed_test 两层）", "schema 不合法（{}.{} 必须是对象）",
+            "schema 不合法（{}.streamers 的哈希写法必须是 sha256:<64 位小写十六进制>）"),
     },
     "app/qr.py": {
         "二维码编码器的参数校验与 `python -m app.qr` 的命令行帮助：app/viewer_share.py 生成二维码时"
@@ -158,6 +159,10 @@ UI_NAMES = {
     "本场品牌": "Brand",
     "打开词表文件夹": "Open Brands Folder",
     "打开 brands 文件夹": "Open Brands Folder",
+    # 「完全磁盘访问权限」那几步旁边的按钮（browser_login.FDA_BUTTON_LABELS，只在 macOS 上有）
+    "打开完全磁盘访问设置": "Open Full Disk Access Settings",
+    "在访达里选中 Python": "Show Python in Finder",
+    "在访达里选中终端": "Show Terminal in Finder",
     # macOS 自己的界面：照抄苹果的英文原名
     "系统设置": "System Settings",
     "隐私与安全性": "Privacy & Security",
@@ -205,8 +210,8 @@ RULE8_FAMILY = {
     "web/viewer.js": "*",
     "web/viewer.html": "*",
     "web/index.html": ("#input-help", "#guard-bar", "#guard-drawer", "#guard-card"),
-    "app/pipeline.py": ("browser_only_message", "_resolve_media", "_confirm_offline",
-                        "_host_wait", "_run_session", "_selfcheck_incident_text"),
+    "app/pipeline.py": ("browser_only_message", "_resolve_media", "_first_layer_refused_note",
+                        "_confirm_offline", "_host_wait", "_run_session", "_selfcheck_incident_text"),
 }
 
 # 禁用词例外：中文臂 → 理由。命中这里的对不查两级禁用词。

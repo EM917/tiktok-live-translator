@@ -19,6 +19,7 @@ from aiohttp import WSMsgType
 
 from app import viewer as viewer_mod
 from app.viewer import ViewerHub
+from tests import socket_net
 
 TOKEN = "t" * viewer_mod.TOKEN_LEN
 
@@ -475,6 +476,8 @@ def test_inbound_messages_never_reach_on_control():
         text({"type": "open_guard_dir"}),
         # 弹幕重译（2026-10-14）：只有本机页面能点，手机发这个一律进不来
         text({"type": "retranslate_comment", "id": "7234567890123456789"}),
+        # 自检「语音识别」一行的「现在下载」（2026-10-29）：提前下载识别模型只有中控本机能点
+        text({"type": "download_asr_model"}),
         # 字幕记录（含观众弹幕和昵称）：导出和打开文件夹只有中控本机能点
         text({"type": "export_transcript"}),
         text({"type": "open_transcripts_dir"}),
@@ -1341,7 +1344,9 @@ def test_idle_sockets_cannot_exhaust_file_handles_under_a_256_limit():
                     await ws.send_json({"type": "auth", "k": TOKEN})
                     return await asyncio.wait_for(ws.receive_json(), 5.0)
 
-        assert asyncio.run(phone())["type"] == "viewer_hello"   # 合法手机照样连得上
+        # 服务端在子进程里，端口是它绑的：向测试总网登记一下（tests/socket_net.py）
+        with socket_net.allowing(port):
+            assert asyncio.run(phone())["type"] == "viewer_hello"   # 合法手机照样连得上
     finally:
         for proc in (attacker, server):
             if proc is None:

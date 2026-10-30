@@ -34,6 +34,18 @@ def hf_hub_dir():
     return Path(hf_home) / "hub" if hf_home else Path.home() / ".cache" / "huggingface" / "hub"
 
 
+def free_bytes(path):
+    """path 所在磁盘的剩余字节数。path 还不存在（第一次下载前 HF 缓存目录还没建）就往上找最近一个存在的
+    目录量；量不出来返回 None——调用方不因此拦下任何事。"""
+    try:
+        p = Path(path)
+        while not p.exists() and p.parent != p:
+            p = p.parent
+        return shutil.disk_usage(str(p)).free
+    except OSError:
+        return None
+
+
 def dir_size(path):
     """不跟随符号链接：HF 缓存的 snapshots/ 是指向 blobs/ 的软链，跟着算会记两遍。"""
     total = 0

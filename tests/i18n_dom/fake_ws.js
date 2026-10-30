@@ -34,7 +34,13 @@
     var i = 0, clicks = S.clicks || [];
     function next() {                              // 依次点：展开设置各行、输入说明、同看面板、换主播并武装、磁盘勾选、rotate
       if (i >= clicks.length) return;
-      var el = document.querySelector(clicks[i++]); if (el) el.click();
+      var step = clicks[i++], el;
+      if (typeof step === "string") {
+        el = document.querySelector(step); if (el) el.click();
+      } else if (step && step.select) {            // 下拉换一项：同用户的操作，改 value 再发 change（「字幕译成」的就地提示要这样才弹）
+        el = document.querySelector(step.select);
+        if (el) { el.value = step.value; el.dispatchEvent(new Event("change", { bubbles: true })); }
+      }
       setTimeout(next, 60);
     }
     setTimeout(next, 100);                         // 等上面 20ms 的消息先到：load 常早于它，先点的行会被 hello 重画收起

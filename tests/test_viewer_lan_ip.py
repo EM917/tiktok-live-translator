@@ -88,7 +88,9 @@ def test_hostname_duplicates_are_collapsed():
     assert out["ambiguous"] is False
 
 
-def test_real_probe_does_not_send_anything_and_never_raises():
-    """默认实现要能在断网的机器上安静地返回 None（UDP connect 不发包）。"""
+def test_real_probe_does_not_send_anything_and_never_raises(socket_net_hits):
+    """默认实现要能在断网的机器上安静地返回 None（UDP connect 不发包）。测试总网（tests/socket_net.py）把那一次
+    connect 当成「连不上」拦下，正好就是断网的样子；它也钉住了这次探测只碰 TEST-NET-1 的一个地址，别的什么都没连。"""
     out = viewer._probe_route_ip()
-    assert out is None or isinstance(out, str)
+    assert out is None
+    assert [h[1:] for h in socket_net_hits] == [("udp", "192.0.2.1:9", "outside")]

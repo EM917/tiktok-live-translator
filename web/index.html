@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=55">
+  <link rel="stylesheet" href="/static/style.css?v=70">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -67,6 +67,17 @@
           <option value="es">Español</option>
         </select>
       </label>
+      <!-- 就地提示（2026-10-29）：这一页的人在英文界面里选了中文、或在中文界面里选了 English 时（live-ui.js
+           captionsLangHint），下拉下面弹一次，几秒后自己收起（app.js showTargetHint）。正文就是上面 tooltip 那一句，
+           由 app.js 按界面语言写进来：role="status" 的内容是弹出时才换的，读屏会念。按钮写那种语言的自称
+           （中文 / English，settings-rows.js langName），是数据，标 translate="no"，名字就是它，提示那句由
+           aria-describedby 接上；点了发 set_ui_lang。连接中、直播中也给（用户 2026-10-29 定）：这时设置分组
+           整块藏着，这颗按钮是切界面语言唯一的入口，切换只让页面重载一次，不停监听。只有 --ui-lang 固定时不给。
+           开合登记在顶栏浮层那张表里 -->
+      <div id="target-hint" class="target-hint popover hidden" role="status">
+        <p id="target-hint-text" class="target-hint-text"></p>
+        <button id="target-hint-switch" class="btn small hidden" type="button" translate="no" aria-describedby="target-hint-text"></button>
+      </div>
       <!-- 字号：小 A —— 滑块 —— 大 A（苹果「图书」的做法），省掉「字号」两个字。
            装了闪购助手、窗口窄于 1400px 时（body.has-flash-btn），顶栏放不下这一整条：收成一颗 28px 的「Aa」按钮，
            点开的小浮层就是下面这个 label 本身（不挪 DOM，style.css 原地改成浮层样式，开合同另外几个顶栏浮层，
@@ -379,6 +390,17 @@
             </svg>
           </button>
         </div>
+        <!-- 界面语言的两段切换（用户 2026-10-29）：中文用户困在英文界面里时，认不出设置分组最后那一行的
+             App Language。两颗按钮都写语言自称（中文 / English），lang 是各自的语言、标 translate="no"，和
+             #ui-lang-select 的选项同一种标法：看不懂当前界面的人也认得出。只切中文、英文，「跟随系统」只在
+             设置那一行选；按下的是此刻的界面语言，点它什么都不发（settings-rows.js langQuickSend）。
+             config.ui_lang_available 不为 true 时（闸关着、又没有 --ui-lang）整组藏着，--ui-lang 固定时置灰
+             （app.js renderLangQuick）。叠在标题区右上角（style.css .lang-quick），不挤动居中的图标和标题。
+             首页整块在连接中、直播中藏着，这一组跟着藏 -->
+        <div id="lang-quick" class="lang-quick hidden" role="group" aria-label="界面语言" data-en-aria-label="App Language">
+          <button id="lang-quick-zh" class="lang-quick-btn" type="button" lang="zh-CN" translate="no" aria-pressed="false">中文</button>
+          <button id="lang-quick-en" class="lang-quick-btn" type="button" lang="en" translate="no" aria-pressed="false">English</button>
+        </div>
       </div>
 
       <div class="sp-input-row">
@@ -392,11 +414,21 @@
            文字由 app.js 写（UNRECOGNIZED_INPUT_MSG），这里留空 -->
       <p id="room-input-error" class="field-error hidden" role="alert"></p>
 
+      <!-- 语音模型还没下载时的一行（2026-10-29 用户选的 launch-2 A）：自检「语音识别」一行的「现在下载」收在
+           「设置 > 启动自检」里，只有提醒时整行折叠，新装机的中控开播前看不到，第一次点「开始翻译」才开始下 3.1 GB。
+           app.js renderAsrHint 看自检那一行带不带 download_asr_model：带着才出现，下好后服务端重发那一行就自己消失。
+           按钮发同一条指令。连接中、直播中整个开始面板藏着，这一行跟着藏。文字由 app.js 写，这里留空 -->
+      <div id="asr-model-hint" class="sp-model-hint hidden">
+        <span id="asr-model-hint-text" class="sp-model-hint-text"></span>
+        <button id="asr-model-hint-btn" class="btn small" type="button" aria-describedby="asr-model-hint-text"
+                data-en="Download Now">现在下载</button>
+      </div>
+
       <!-- 原来的两段灰字，收进「?」：只有少数场景用得上，不该常驻首屏 -->
       <div id="input-help" class="sp-help hidden">
         <p data-en="You can also paste a .flv or .m3u8 stream URL.">也可以直接粘贴 .flv / .m3u8 流地址。</p>
         <p data-en-html="For some live streams, TikTok doesn’t provide a stream URL to the app. In that case, <b>paste the live link and the .flv URL from your browser together</b>, separated by a space. The link is used for comments and glossaries, and the .flv URL for audio.">个别直播间 TikTok 不把流地址给程序。这时把<b>直播间链接和浏览器里的 .flv 地址一起粘进来</b>（中间空格隔开）：前者管弹幕和词表，后者作音频源。</p>
-        <p data-en="The speech model downloads the first time you start. Progress appears here.">首次识别需下载模型，进度会显示在页面上。</p>
+        <p data-en="The speech model downloads the first time you click Start, and captions wait until it finishes. Until it’s downloaded, Download Now appears below the input field. Click it before you go live.">识别模型在第一次点「开始翻译」时下载，字幕要等它下完。还没下载时，输入框下面会出现「现在下载」，开播前点它先下好。</p>
       </div>
 
       <div class="sp-options">
@@ -701,7 +733,8 @@
 
           <!-- 界面语言：跟随系统 / 中文 / English。config.ui_lang_available 不为 true 时整行隐藏
                （发布闸关着、又没有 --ui-lang 一次性覆盖时，config 里根本没有这个键），见 app.js
-               renderLang。设置分组只在待机时可见，所以切换后页面重载不会打断监听 -->
+               renderLang。设置分组只在待机时可见；连接中、直播中切界面语言走「字幕译成」的就地提示
+               （#target-hint）。切换只让页面重载一次，不打断监听（app/pipeline.py _set_ui_lang） -->
           <div id="lang-card" class="set-item hidden">
             <button id="lang-head" class="set-row" type="button" aria-expanded="false" aria-controls="lang-body">
               <span class="set-icon indigo" aria-hidden="true">
@@ -711,7 +744,10 @@
                   <path d="M2.6 1h4.8A1.6 1.6 0 0 1 9 2.6v4.8A1.6 1.6 0 0 1 7.4 9H2.6A1.6 1.6 0 0 1 1 7.4V2.6A1.6 1.6 0 0 1 2.6 1ZM4.5 2.2v.9h1v-.9ZM2.5 3.6v.95h5V3.6ZM5 5 2.4 7.9h1.3L5 6.45 6.3 7.9h1.3ZM11.1 6.5h1.8l2.6 8.5h-1.8l-.6-1.9h-2.2l-.6 1.9H8.5ZM12 9.3l-.65 2.2h1.3Z"/>
                 </svg>
               </span>
-              <span class="set-name" data-en="App Language">界面语言 · Language</span>
+              <!-- 行名两种界面对称（用户 2026-10-29）：中文页「界面语言 · Language」，英文页「App Language · 界面语言」，
+                   困在看不懂的界面里的人都认得出。带上的另一种语言名是名字，标 lang 和 translate="no"；
+                   哪一段露出来按 <html lang> 二选一（style.css .zh-page-only / .en-page-only） -->
+              <span class="set-name"><span data-en="App Language">界面语言</span> · <span id="lang-head-en" class="zh-page-only" lang="en" translate="no">Language</span><span id="lang-head-zh" class="en-page-only" lang="zh-CN" translate="no">界面语言</span></span>
               <span id="lang-summary" class="set-value"></span>
               <span class="set-chevron" aria-hidden="true"></span>
             </button>
@@ -851,10 +887,10 @@
   <script src="/static/qrcanvas.js?v=1"></script>
   <script src="/static/switch.js?v=2"></script>
   <script src="/static/session-divider.js?v=1"></script>
-  <script src="/static/settings-rows.js?v=3"></script>
-  <script src="/static/live-ui.js?v=7"></script>
+  <script src="/static/settings-rows.js?v=4"></script>
+  <script src="/static/live-ui.js?v=8"></script>
   <script src="/static/guard.js?v=6"></script>
   <script src="/static/flash.js?v=3"></script>
-  <script src="/static/app.js?v=88"></script>
+  <script src="/static/app.js?v=101"></script>
 </body>
 </html>

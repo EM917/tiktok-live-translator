@@ -259,16 +259,10 @@ def test_a_redirect_is_not_followed(status):
 
 # ---- 连不上、不回话、回的不是 HTTP ------------------------------------------------------------------
 
-def free_port():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 def test_a_port_nobody_listens_on_is_unreachable():
-    port = free_port()
-    assert port != 9334
-    got = asyncio.run(fs.post_control("stop", FAKE_TOKEN, base="http://127.0.0.1:%d" % port, timeout=1.0))
+    """连不上：连 127.0.0.1:9 哨兵（discard，三个系统上默认都没开）。不能先绑一个端口、关掉再去连：
+    tests/socket_net.py 只放行本进程开着的服务器和这个哨兵，关掉的端口会被当成连了别人的服务。"""
+    got = asyncio.run(fs.post_control("stop", FAKE_TOKEN, base="http://127.0.0.1:9", timeout=1.0))
     assert got == "unreachable"
 
 

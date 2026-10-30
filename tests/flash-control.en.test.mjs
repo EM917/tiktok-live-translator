@@ -107,6 +107,8 @@ test("闪购助手 409 的代码：Flash Sale Helper declined: 加契约里的�
     not_running: "It hasn’t started yet.",
     not_paused: "It isn’t paused.",
     busy: "It’s busy. Try again in a moment.",
+    stop_pending: "A Stop is still queued. Start again once it reaches the page.",
+    superseded: "Stop wasn’t carried out: Start was pressed on the page after it.",
     no_response: "The page didn’t respond. This command won’t be carried out later.",
     error: "The page reported an error.",
   };
