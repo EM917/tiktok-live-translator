@@ -534,3 +534,45 @@ def test_the_second_window_ties_its_localization_to_the_table_not_the_gate():
     (bridge,) = _calls(branch, "expose_window_lang")
     (localized,) = [kw.value for kw in bridge.keywords if kw.arg == "localized"]
     assert _call_name(localized) == "bool" and localized.args[0].id == "loc"
+
+
+def test_a_second_launch_says_when_the_running_copy_is_another_one():
+    """2026-10-29：双击打开时窗口被开到了另一份程序上（另一个文件夹、另一个版本），界面看起来像自己变了语言。
+    行为不变（照旧打开已有实例），只是不是这一份时弹一个说明框：窗口模式和浏览器模式各一处，文字来自
+    app/instance.other_install_text（成对文案），经 _info_dialog（终端打中文、无终端的 Mac 弹框）。
+    窗口模式带了 --url 时两句并进同一个框；打开的地址是 Found 里的 url。"""
+    window = _function(_main(), "run_with_window")
+    branch = next(n for n in window.body if isinstance(n, ast.If) and _calls(n, "webview.create_window"))
+    assert ast.unparse(branch.test) == "existing"
+    (note,) = _calls(branch, "other_install_text")
+    assert [ast.unparse(a) for a in note.args] == ["existing"]
+    (dialog,) = _calls(branch, "_info_dialog")
+    assert ast.unparse(dialog.args[0]) == "L('\\n\\n', '\\n\\n').join(notes)"
+    assert _first_line(branch, "other_install_text") < _first_line(branch, "_info_dialog") \
+        < _first_line(branch, "webview.create_window")
+    (create,) = _calls(branch, "webview.create_window")
+    assert ast.unparse(create.args[1]) == "existing.url"
+
+    main = _function(_main(), "main")
+    browser = next(n for n in ast.walk(main) if isinstance(n, ast.If) and ast.unparse(n.test) == "existing")
+    (note,) = _calls(browser, "other_install_text")
+    assert [ast.unparse(a) for a in note.args] == ["existing"]
+    (dialog,) = _calls(browser, "_info_dialog")
+    assert _first_line(browser, "_info_dialog") < _first_line(browser, "webbrowser.open")
+    (opened,) = _calls(browser, "webbrowser.open")
+    assert ast.unparse(opened.args[0]) == "existing.url"
+
+
+@pytest.mark.parametrize("same,version", [(False, "0.19.0"), (False, None), (None, None)])
+def test_the_other_copy_dialog_reaches_the_system_as_plain_text_in_both_languages(same, version):
+    from app import native_dialog
+    from app.instance import Found, other_install_text
+
+    note = other_install_text(Found("http://127.0.0.1:8766", same, version))
+    zh = native_dialog.osascript_argv(note, button=native_dialog.INFO_BUTTON, icon="note", lang="zh")
+    en = native_dialog.osascript_argv(note, button=native_dialog.INFO_BUTTON, icon="note", lang="en")
+    assert _plain(zh) and _plain(en)
+    assert "另一份程序" in zh[-1] or "程序已经在运行" in zh[-1]
+    assert not CJK.search(en[-1]) and "copy" in en[-1]
+    text, title = native_dialog.messagebox_args(note, lang="en")
+    assert _plain((text, title)) and not CJK.search(text) and title == "TikTok Live Translator"

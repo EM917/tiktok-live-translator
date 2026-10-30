@@ -681,6 +681,10 @@ def test_the_upgrade_text_says_what_was_seen_and_what_to_do(platform):
     assert not i18n.CJK.search(en) and "3.9" in en and "3.10" in en and "python.org" in en
     assert ("完全磁盘访问权限" in text) is darwin
     assert ("Full Disk Access" in en) is darwin
+    # 路径和步骤指向窗口顶部那条提示，不指向「浏览器登录态」那一行：直播中设置分组收着，那一行看不见（2026-10-29）
+    assert "浏览器登录态" not in text and "Browser Login" not in en
+    assert ("窗口顶部那条提示里有路径和步骤" in text) is darwin
+    assert ("the notice at the top of the app’s window shows the path and steps" in en) is darwin
     for word in ("可能", "似乎", "might", "maybe", "probably"):
         assert word not in text and word not in en
 

@@ -19,19 +19,19 @@ import pytest
 from app import i18n, settings
 from app.i18n import EN, ZH, Bi, L, LN, bimap, of, render
 
-REAL_SYSTEM_LANG = i18n.system_lang
+REAL_SYSTEM_LANGS = i18n.system_langs
 
 
 @pytest.fixture(autouse=True)
 def _fresh_i18n(monkeypatch):
-    """模块级状态与三个环境变量不许在用例之间泄漏，也不许受跑测试那台机器的系统语言影响。"""
+    """模块级状态与四个环境变量不许在用例之间泄漏，也不许受跑测试那台机器的系统语言影响。"""
     monkeypatch.setattr(i18n, "_state", {"choice": "system", "lang": ZH, "system": None,
                                          "override": None})
     monkeypatch.setattr(i18n, "_bad_once", set())
     monkeypatch.setattr(i18n, "NET", None)
     monkeypatch.setattr(i18n, "I18N_ENABLED", False)
-    monkeypatch.setattr(i18n, "system_lang", lambda: None)
-    for name in (i18n.ENV_OVERRIDE, i18n.ENV_SYSTEM, i18n.ENV_INSTALL):
+    monkeypatch.setattr(i18n, "system_langs", lambda: [])
+    for name in (i18n.ENV_OVERRIDE, i18n.ENV_SYSTEM, i18n.ENV_SYSTEM_ZH, i18n.ENV_INSTALL):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -274,28 +274,33 @@ def _fake_defaults(outputs, calls):
 
 
 @pytest.mark.parametrize("outputs, want, ncalls", [
-    ([(1, ""), (0, '(\n    "en-US",\n    "zh-Hans-US"\n)\n')], EN, 2),     # 本机实测的形状
-    ([(0, '(\n    "zh-Hans",\n    en\n)\n')], ZH, 1),                       # App 单独选过就不看全局
-    ([(1, ""), (0, "(\n    en,\n    \"zh-Hant-TW\"\n)\n")], EN, 2),        # 不带引号的标签
-    ([(1, ""), (0, '(\n    "zh-Hant-TW"\n)\n')], ZH, 2),
-    ([(0, "()\n"), (0, '(\n    "zh-Hans-CN"\n)\n')], ZH, 2),               # 空列表当没读到
-    ([(1, ""), (1, "")], None, 2),
-    ([(FileNotFoundError(), ""), (FileNotFoundError(), "")], None, 2),
+    ([(1, ""), (0, '(\n    "en-US",\n    "zh-Hans-US"\n)\n')], [EN, ZH], 2),     # 本机实测的形状
+    ([(0, '(\n    "zh-Hans",\n    en\n)\n')], [ZH, EN], 1),                       # App 单独选过就不看全局
+    ([(0, '(\n    en\n)\n')], [EN], 1),               # App 单独选了英文：全局列表里有中文也不看
+    ([(1, ""), (0, "(\n    en,\n    \"zh-Hant-TW\"\n)\n")], [EN, ZH], 2),        # 不带引号的标签
+    ([(1, ""), (0, '(\n    "zh-Hant-TW"\n)\n')], [ZH], 2),
+    ([(1, ""), (0, '(\n    "en-US",\n    "fr-FR",\n    "es-419"\n)\n')], [EN, EN, EN], 2),
+    ([(1, ""), (0, '(\n    "en-US",\n    42,\n    "zh-Hans"\n)\n')], [EN, ZH], 2),   # 读不懂的项跳过
+    ([(0, "()\n"), (0, '(\n    "zh-Hans-CN"\n)\n')], [ZH], 2),               # 空列表当没读到
+    ([(1, ""), (0, "garbage\n")], [], 2),
+    ([(1, ""), (1, "")], [], 2),
+    ([(FileNotFoundError(), ""), (FileNotFoundError(), "")], [], 2),
 ])
-def test_system_lang_on_macos_reads_app_then_global_apple_languages(monkeypatch, outputs, want, ncalls):
+def test_system_langs_on_macos_reads_app_then_global_apple_languages(monkeypatch, outputs, want, ncalls):
+    """整张首选语言列表按原顺序（用户 2026-10-29：新装时列表里有中文就默认中文界面，不只看第一项）。"""
     calls = []
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(i18n.subprocess, "run", _fake_defaults(outputs, calls))
-    assert REAL_SYSTEM_LANG() == want
+    assert REAL_SYSTEM_LANGS() == want
     assert len(calls) == ncalls
     assert calls[0] == (["defaults", "read", i18n.BUNDLE_ID, "AppleLanguages"], 2)
     if ncalls == 2:
         assert calls[1] == (["defaults", "read", "-g", "AppleLanguages"], 2)
 
 
-@pytest.mark.parametrize("code, want", [(0x0804, ZH), (0x0404, ZH), (0x0C04, ZH),
-                                        (0x0409, EN), (0x0411, EN), (RuntimeError("x"), None)])
-def test_system_lang_on_windows_uses_the_display_language(monkeypatch, code, want):
+@pytest.mark.parametrize("code, want", [(0x0804, [ZH]), (0x0404, [ZH]), (0x0C04, [ZH]),
+                                        (0x0409, [EN]), (0x0411, [EN]), (RuntimeError("x"), [])])
+def test_system_langs_on_windows_is_just_the_display_language(monkeypatch, code, want):
     import ctypes
 
     def ui_language():
@@ -306,24 +311,25 @@ def test_system_lang_on_windows_uses_the_display_language(monkeypatch, code, wan
     fake = types.SimpleNamespace(kernel32=types.SimpleNamespace(GetUserDefaultUILanguage=ui_language))
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(ctypes, "windll", fake, raising=False)
-    assert REAL_SYSTEM_LANG() == want
+    assert REAL_SYSTEM_LANGS() == want
 
 
 @pytest.mark.parametrize("env, want", [
-    ({"LANGUAGE": "zh_CN:en", "LANG": "en_US.UTF-8"}, ZH),
-    ({"LANG": "en_US.UTF-8"}, EN),
-    ({"LC_ALL": "C", "LANG": "zh_TW.UTF-8"}, ZH),
-    ({"LC_MESSAGES": "fr_FR.UTF-8"}, EN),
-    ({"LANG": "C.UTF-8"}, None),
-    ({}, None),
+    ({"LANGUAGE": "zh_CN:en", "LANG": "en_US.UTF-8"}, [ZH, EN]),
+    ({"LANGUAGE": "en_US:fr::zh_CN", "LANG": "en_US.UTF-8"}, [EN, EN, ZH]),     # LANGUAGE 是一串，按顺序
+    ({"LANG": "en_US.UTF-8"}, [EN]),
+    ({"LC_ALL": "C", "LANG": "zh_TW.UTF-8"}, [ZH]),
+    ({"LC_MESSAGES": "fr_FR.UTF-8"}, [EN]),
+    ({"LANG": "C.UTF-8"}, []),
+    ({}, []),
 ])
-def test_system_lang_elsewhere_reads_locale_variables(monkeypatch, env, want):
+def test_system_langs_elsewhere_reads_locale_variables(monkeypatch, env, want):
     monkeypatch.setattr(sys, "platform", "linux")
     for name in ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    assert REAL_SYSTEM_LANG() == want
+    assert REAL_SYSTEM_LANGS() == want
 
 
 @pytest.mark.parametrize("header, want", [
@@ -410,39 +416,52 @@ def test_boot_treats_a_venv_that_never_finished_installing_as_fresh(tmp_path, ma
     assert env[i18n.ENV_INSTALL] == "fresh"
 
 
+@pytest.mark.parametrize("langs, want_lang, want_saved", [
+    ([EN], EN, {"ui_lang": "system", "target_lang": "en"}),
+    ([EN, ZH], ZH, {"ui_lang": "zh"}),         # 2026-10-28 那台 Mac 的形状：英文在前、简体中文第二
+])
 def test_the_setup_script_doctor_run_migrates_like_a_fresh_install(tmp_path, settings_file,
-                                                                   monkeypatch):
+                                                                   monkeypatch, langs, want_lang,
+                                                                   want_saved):
     """setup.sh 的 `.venv/bin/python main.py --doctor`：boot 在 ensure_env 之前（记号那时还没写），
-    settle 在同一个进程里。英文系统上写出跟随系统 + 英文字幕，和双击 .app 的新装一样。"""
+    settle 在同一个进程里，和双击 .app 的新装一样。只有英文的系统写出跟随系统 + 英文字幕；
+    首选语言列表里有中文的（首项不是中文）写中文，字幕照旧默认中文（用户 2026-10-29）。"""
     monkeypatch.setattr(i18n, "I18N_ENABLED", True)
-    monkeypatch.setattr(i18n, "system_lang", lambda: EN)
+    monkeypatch.setattr(i18n, "system_langs", lambda: list(langs))
     _setup_script_venv(tmp_path)
     env = {}
     _boot(tmp_path, env, ("--doctor",))
     assert env[i18n.ENV_INSTALL] == "fresh"
     _finish_install(tmp_path)                         # ensure_env 发现没有指纹，补跑 pip 后写下
-    assert i18n.settle(tmp_path, environ=env) == EN
-    assert settings.load_settings() == {"ui_lang": "system", "target_lang": "en"}
+    assert i18n.settle(tmp_path, environ=env) == want_lang
+    assert settings.load_settings() == want_saved
 
 
 def test_boot_detects_system_language_once_per_launch(tmp_path, monkeypatch):
+    """首项记进 TLT_SYSTEM_LANG，「列表里有没有中文」记进 TLT_SYSTEM_HAS_ZH，同一次检测、一起带过 exec。"""
     calls = []
-    monkeypatch.setattr(i18n, "system_lang", lambda: calls.append(1) or EN)
+    monkeypatch.setattr(i18n, "system_langs", lambda: calls.append(1) or [EN, ZH])
     env = {}
     _boot(tmp_path, env)
     _boot(tmp_path, env)
     assert calls == [1] and env[i18n.ENV_SYSTEM] == EN and i18n._state["system"] == EN
+    assert env[i18n.ENV_SYSTEM_ZH] == "1"
 
     def boom():
         raise AssertionError("缓存命中时不该再检测")
 
-    monkeypatch.setattr(i18n, "system_lang", boom)
+    monkeypatch.setattr(i18n, "system_langs", boom)
     _boot(tmp_path, {i18n.ENV_SYSTEM: "zh"})
     assert i18n._state["system"] == ZH
-    monkeypatch.setattr(i18n, "system_lang", lambda: None)
+    monkeypatch.setattr(i18n, "system_langs", lambda: [EN, EN])
+    env = {}
+    _boot(tmp_path, env)
+    assert (env[i18n.ENV_SYSTEM], env[i18n.ENV_SYSTEM_ZH]) == (EN, "0")
+    monkeypatch.setattr(i18n, "system_langs", lambda: [])
     env = {}
     _boot(tmp_path, env)
     assert env[i18n.ENV_SYSTEM] == "none" and i18n._state["system"] is None
+    assert env[i18n.ENV_SYSTEM_ZH] == "0"
 
 
 @pytest.mark.parametrize("gate, saved, install, system, argv, env_override, want, locked", [
@@ -476,6 +495,26 @@ def test_boot_resolution_order(tmp_path, monkeypatch, gate, saved, install, syst
     assert i18n.enabled() is (gate or locked)
 
 
+@pytest.mark.parametrize("saved, install, system, has_zh, want", [
+    (None, "fresh", "en", "1", ZH),            # 首项英文、列表里有中文：新装用中文（用户 2026-10-29）
+    (None, "fresh", "en", "0", EN),            # 没有中文：照旧跟随系统
+    (None, "fresh", "en", None, EN),           # 老进程带过来的环境里没有这个键：当没有中文
+    (None, "fresh", "zh", "1", ZH),
+    (None, "existing", "en", "1", ZH),         # 老装机本来就固定中文
+    ("system", "fresh", "en", "1", EN),        # 设置里已经存了跟随系统：照旧解析，不因此变语言
+    ("en", "fresh", "en", "1", EN),
+])
+def test_boot_reads_the_chinese_further_down_the_list_only_when_migrating(tmp_path, monkeypatch, saved,
+                                                                          install, system, has_zh, want):
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+    if saved is not None:
+        (tmp_path / "settings.json").write_text(json.dumps({"ui_lang": saved}), encoding="utf-8")
+    env = {i18n.ENV_INSTALL: install, i18n.ENV_SYSTEM: system}
+    if has_zh is not None:
+        env[i18n.ENV_SYSTEM_ZH] = has_zh
+    assert _boot(tmp_path, env) == want
+
+
 @pytest.mark.parametrize("content", [None, b"", b"{ broken", b'{"ui_lang": "en"}', b"[1, 2]",
                                      '﻿{"ui_lang": "zh"}'.encode("utf-8")])
 def test_boot_never_writes_or_touches_settings(tmp_path, monkeypatch, content):
@@ -499,7 +538,7 @@ def test_boot_never_raises(tmp_path, monkeypatch):
     def boom():
         raise RuntimeError("detector crashed")
 
-    monkeypatch.setattr(i18n, "system_lang", boom)
+    monkeypatch.setattr(i18n, "system_langs", boom)
     (tmp_path / "settings.json").mkdir()                  # 读字节会抛 IsADirectoryError
     assert _boot(tmp_path, {}) == ZH
     assert _boot(tmp_path / "missing", {}) == ZH
@@ -529,7 +568,12 @@ def test_settle_writes_nothing_while_the_gate_is_closed(tmp_path, settings_file,
 
 @pytest.mark.parametrize("env, want_saved, want_lang", [
     ({i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "en"}, "system", EN),
+    ({i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "en", i18n.ENV_SYSTEM_ZH: "0"}, "system", EN),
+    # 用户 2026-10-29：新装、首选语言列表首项不是中文、但列表里有中文，写中文
+    ({i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "en", i18n.ENV_SYSTEM_ZH: "1"}, "zh", ZH),
+    ({i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "zh", i18n.ENV_SYSTEM_ZH: "1"}, "system", ZH),  # 首项就是中文：仍跟随系统
     ({i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "none"}, "system", ZH),
+    ({i18n.ENV_INSTALL: "existing", i18n.ENV_SYSTEM: "en", i18n.ENV_SYSTEM_ZH: "0"}, "zh", ZH),
     ({i18n.ENV_INSTALL: "existing", i18n.ENV_SYSTEM: "en"}, "zh", ZH),   # 用户决定 1：老装机固定中文
     ({i18n.ENV_SYSTEM: "en"}, "zh", ZH),                                  # 没经过 boot：按老装机
 ])
@@ -570,6 +614,9 @@ FRESH_EN = {i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "en"}
     (True, FRESH_EN, {"ui_lang": "zh"}, None),                           # 界面是中文
     (True, {i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "zh"}, None, None),
     (True, {i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "none"}, None, None),   # 检测失败按中文
+    (True, dict(FRESH_EN, **{i18n.ENV_SYSTEM_ZH: "1"}), None, None),             # 列表里有中文：界面中文、字幕照旧
+    (True, dict(FRESH_EN, **{i18n.ENV_SYSTEM_ZH: "0"}), None, EN),
+    (True, dict(FRESH_EN, **{i18n.ENV_SYSTEM_ZH: "1"}), {"ui_lang": "system"}, None),   # 已装好：不动
     (True, {i18n.ENV_INSTALL: "existing", i18n.ENV_SYSTEM: "en"}, {"ui_lang": "en"}, None),  # 老用户不动
     (True, {i18n.ENV_INSTALL: "existing", i18n.ENV_SYSTEM: "en"}, None, None),
     (True, {i18n.ENV_SYSTEM: "en"}, {"ui_lang": "en"}, None),            # 没经过 boot：按老装机
@@ -602,7 +649,7 @@ def test_english_caption_default_is_written_on_the_first_launch_only(tmp_path, s
     """真实顺序：第一个进程 boot 判出 fresh，ensure_env 建 .venv、装完写记号再 execv，
     最终进程 settle 写。下一次启动 settings.json 已在，判成老装机，不再写。"""
     monkeypatch.setattr(i18n, "I18N_ENABLED", True)
-    monkeypatch.setattr(i18n, "system_lang", lambda: EN)
+    monkeypatch.setattr(i18n, "system_langs", lambda: [EN])
     env = {}
     _boot(tmp_path, env)
     _finish_install(tmp_path)
@@ -617,13 +664,34 @@ def test_english_caption_default_is_written_on_the_first_launch_only(tmp_path, s
     assert _snapshot(tmp_path) == before
 
 
+def test_a_first_launch_on_an_english_first_mac_with_chinese_second_is_chinese(tmp_path, settings_file,
+                                                                             monkeypatch):
+    """2026-10-28 那台 Mac：AppleLanguages 是 ("en-US", "zh-Hans-US")，用户是中文中控。按以前的规则
+    新装写跟随系统、解析成英文，再顺带写英文字幕。用户 10-29 定：列表里有中文就用中文。
+    真实顺序走一遍（boot → 装完 → execv 后再 boot → settle），再像下一次启动那样 boot 一次：
+    写下的是 zh，以后不论系统语言怎么排都是中文，直到用户自己在设置里改。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+    monkeypatch.setattr(i18n, "system_langs", lambda: [EN, ZH])
+    env = {}
+    _boot(tmp_path, env)
+    _finish_install(tmp_path)
+    _boot(tmp_path, env)
+    assert i18n.settle(tmp_path, environ=env) == ZH
+    assert settings.load_settings() == {"ui_lang": "zh"}
+    assert i18n.config_info()["ui_lang_setting"] == "zh"
+    monkeypatch.setattr(i18n, "system_langs", lambda: [EN])
+    env = {}
+    assert _boot(tmp_path, env) == ZH
+    assert env[i18n.ENV_INSTALL] == "existing"
+
+
 def test_an_update_restart_does_not_default_captions_to_english(tmp_path, settings_file,
                                                                 monkeypatch):
     """复审（live-path-safety，提交 T）：一键更新用 os.execv 重启（updater.py），环境变量整条继承。
     新装第一次启动时界面解析成中文，之后用户在设置里把界面改成英文、没动过目标语言：更新重启
     （同一个 env 再 boot + settle）不能静默改成英文字幕。"""
     monkeypatch.setattr(i18n, "I18N_ENABLED", True)
-    monkeypatch.setattr(i18n, "system_lang", lambda: ZH)
+    monkeypatch.setattr(i18n, "system_langs", lambda: [ZH])
     env = {}
     _boot(tmp_path, env)
     assert env[i18n.ENV_INSTALL] == "fresh"
@@ -660,7 +728,7 @@ def test_an_install_from_the_closed_gate_weeks_stays_chinese_after_updating_acro
     """闸关着时装上、一直没退出，一键更新到开闸的版本：execv 继承环境变量。第一个版本的 settle
     已经把它记成老装机，开闸后的 settle 按老装机迁移成 zh（用户决定 1），不跟随系统变英文，
     也不写英文字幕。"""
-    monkeypatch.setattr(i18n, "system_lang", lambda: EN)
+    monkeypatch.setattr(i18n, "system_langs", lambda: [EN])
     env = {}
     _boot(tmp_path, env)
     assert env[i18n.ENV_INSTALL] == "fresh"

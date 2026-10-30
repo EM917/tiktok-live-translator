@@ -21,13 +21,17 @@ def esc_osa(text):
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def osascript_argv(message, *, button, icon, giving_up=None, lang=None):
-    """macOS display dialog 的 argv。标题恒为 APP_NAME；giving_up 秒后自己消失（None 表示不消失）。"""
+def osascript_argv(message, *, button, icon, giving_up=None, lang=None, delay=None):
+    """macOS display dialog 的 argv。标题恒为 APP_NAME；giving_up 秒后自己消失（None 表示不消失）。
+    delay 秒后才弹（None 表示马上弹）：等在 osascript 自己里面，进程一起来就在，弹出来之前就能被关掉——
+    「正在启动」的提示用它（app/bootstrap.launch_dialog_argv），启动快于这么久就不弹。"""
     script = 'display dialog "{}" with title "{}" buttons {{"{}"}} default button 1 with icon {}'.format(
         esc_osa(i18n.text(message, lang)), esc_osa(i18n.text(APP_NAME, lang)),
         esc_osa(i18n.text(button, lang)), icon)
     if giving_up:
         script += " giving up after {}".format(int(giving_up))
+    if delay:
+        return ["osascript", "-e", "delay {:g}".format(delay), "-e", script]
     return ["osascript", "-e", script]
 
 
