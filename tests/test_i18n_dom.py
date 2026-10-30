@@ -596,6 +596,40 @@ def _hidden(html, element_id):
     return bool(tag) and "hidden" in _classes(tag.group(0))
 
 
+# 首页输入框下面那一行（#asr-model-hint，2026-10-29 launch-2 A）的文字和按钮；大小来自 app/asr.py MODEL_SIZES_MB
+ASR_HINT_TEXT = {"en": ("The speech model isn’t downloaded yet (about 3.1 GB)", "Download Now"),
+                 "zh": ("语音模型还没下载（约 3.1 GB）", "现在下载")}
+
+
+@needs_chrome
+@pytest.mark.parametrize("name", S.ASR_FETCH_HOMES)
+def test_home_says_the_speech_model_is_not_downloaded(dom, name):
+    """新装机、语音模型还没下载：首页输入框下面那一行出现，句子和按钮都画出来了；自检那一行也带着「现在下载」。
+    英文页的漏翻由 test_english_page_has_no_chinese_left 扫（home-asr-fetch 在 DESKTOP_EN 里）。"""
+    result = dom.scan(name)
+    html = result["dom"]
+    lang = "zh" if name.endswith("-zh") else "en"
+    sentence, label = ASR_HINT_TEXT[lang]
+    assert not _hidden(html, "asr-model-hint"), "首页那一行没出现"
+    assert _holders(html, sentence), "没画出「{}」".format(sentence)
+    assert re.search(r'<button[^>]*\bid="asr-model-hint-btn"[^>]*>{}</button>'.format(re.escape(label)), html), \
+        "首页按钮不是「{}」".format(label)
+    assert "sc-action" in html, "自检「语音识别」一行没带「现在下载」"
+
+
+@needs_chrome
+@needs_mac
+@pytest.mark.parametrize("name", S.ASR_FETCH_HOMES)
+def test_home_model_row_fits_on_one_line(dom, name):
+    """这一行在 600px 的开始面板里一行放得下：句子不折行（一行 18px），整行不横向溢出，按钮在这一行里面。"""
+    got = dom.scan(name)["measure"]
+    row, text, btn = (got[sel] for sel in S.ASR_HINT_MEASURE)
+    assert row and row["width"] > 0 and text and btn, "量不到：{} {} {}".format(row, text, btn)
+    assert row["scrollWidth"] <= row["clientWidth"] + 1, "这一行横向溢出 {}".format(row)
+    assert text["height"] < 30, "句子折成了两行 {}".format(text)
+    assert btn["width"] > 0 and btn["right"] <= row["right"], "按钮没在这一行里 {} {}".format(btn, row)
+
+
 @needs_chrome
 def test_guard_scenario_clicks_took_effect(dom):
     """弹幕留意的场景：点击没点到的话，展开后才有的文字就没被扫到而扫描照样绿。设置行展开了；

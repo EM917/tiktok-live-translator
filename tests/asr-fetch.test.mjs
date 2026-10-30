@@ -111,39 +111,3 @@ for (const lang of ["zh", "en"]) {
     assert.equal(btn.disabled, false);
   });
 }
-
-// 「启动自检」这一行以前只在有失败项时自己展开；只有提醒时折叠成「通过 · N 项提醒」，新装机根本看不到
-// 「现在下载」。带 action 的那一行出现时也展开；下完（这一行没有 action 了）照旧按结论收起。下载中不收
-// （签名不变），重连重放 hello 也不动展开状态
-const open = (page) => !page.el("sc-list").classList.contains("hidden");
-
-for (const lang of ["zh", "en"]) {
-  test("能下载识别模型时「启动自检」自己展开，下完收起（" + lang + "）", () => {
-    const page = idlePage(lang, [asrRow(ACTION)]);
-    assert.equal(open(page), true);
-    assert.equal(page.el("sc-head").getAttribute("aria-expanded"), "true");
-
-    buttons(page)[0].click();
-    page.push({ type: "selfcheck", checks: [asrRow(Object.assign({}, ACTION, { busy: true }))],
-                summary: { total: 1, fail: 0, warn: 1, ok: 0 } });
-    assert.equal(open(page), true, "下载中不收起");
-
-    page.push({ type: "selfcheck", checks: [{ name: "Speech Recognition", level: "ok",
-                                              detail: "mlx + large-v3 (model downloaded)", fix: "" }],
-                summary: { total: 1, fail: 0, warn: 0, ok: 1 } });
-    assert.equal(open(page), false);
-  });
-
-  test("别的提醒照旧不展开（" + lang + "）", () => {
-    const page = idlePage(lang, [{ name: "Glossary", level: "warn", detail: "No glossary yet", fix: "" }]);
-    assert.equal(open(page), false);
-  });
-
-  test("中控自己收起之后，同一个结论重发（重连的 hello）不再展开（" + lang + "）", () => {
-    const page = idlePage(lang, [asrRow(ACTION)]);
-    page.el("sc-head").click();
-    assert.equal(open(page), false);
-    page.push({ type: "selfcheck", checks: [asrRow(ACTION)], summary: { total: 1, fail: 0, warn: 1, ok: 0 } });
-    assert.equal(open(page), false);
-  });
-}

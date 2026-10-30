@@ -4335,12 +4335,20 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         await self._refresh_asr_check()
 
     async def _asr_loaded_ok(self, refresh=False):
-        """按配置加载成功：之前记下的加载失败作废，自检「语音识别」那一行刷回来。"""
+        """按配置加载成功：之前记下的加载失败作废，自检「语音识别」那一行刷回来。
+
+        那一行还带着「现在下载」时也刷新：没点「现在下载」就开播，模型是这一场加载时自己下好的。不刷新的话，
+        停下后自检那一行和首页输入框下面那一行（web/app.js renderAsrHint）还说「语音模型还没下载」。"""
         if getattr(self, "_asr_load_error", None) is not None:
             self._asr_load_error = None
             refresh = True
-        if refresh:
+        if refresh or self._asr_row_offers_download():
             await self._refresh_asr_check()
+
+    def _asr_row_offers_download(self):
+        """已发布的自检里，「语音识别」那一行是不是还带着「现在下载」（action）。"""
+        from .selfcheck import ACTION_DOWNLOAD_ASR
+        return any(c.get("action") == ACTION_DOWNLOAD_ASR for c in self._published_checks() or [])
 
     async def _on_model_load_failed(self, exc, config, loop, key=None):
         """识别模型没能加载。写审计；界面上只说观察到的事和能做的事——网络、磁盘、Metal
