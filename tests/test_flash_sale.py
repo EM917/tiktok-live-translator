@@ -138,7 +138,7 @@ def test_the_running_sample_normalizes_to_the_documented_shape():
     assert first == {"id": "1000000000000000001", "title": "Glow Serum Trio (Fictional)", "state": "live",
                      "round": 2, "ends_ms": int(round(iso_s("2026-10-27T21:51:01.000+0000") * 1000)),
                      "next_ms": None, "stock_left": 30, "stock_total": 30, "renewals": 0, "enabled": True,
-                     "position": None, "skip": None}      # 样例是 0.7.2 的：没有这两个键，当 null
+                     "checked": None, "position": None, "skip": None}      # 样例是 0.7.2 的：没有这三个键，当 null
     between = out["products"][1]
     assert between["state"] == "between_rounds" and between["ends_ms"] is None
     assert between["next_ms"] == int(round(iso_s("2026-10-27T21:37:10.000+0000") * 1000))
@@ -204,8 +204,16 @@ def test_integer_fields_refuse_bool_fractions_and_huge_values(value, expected):
 @pytest.mark.parametrize("value, expected", [(True, True), (False, False), (1, None), ("true", None),
                                              (None, None)])
 def test_boolean_fields_take_only_real_booleans(value, expected):
-    out = fs.normalize({"running": value, "products": [{"enabled": value}]})
+    out = fs.normalize({"running": value, "products": [{"enabled": value, "checked": value}]})
     assert out["running"] is expected and out["products"][0]["enabled"] is expected
+    assert out["products"][0]["checked"] is expected
+
+
+def test_checked_stays_null_without_the_key_and_does_not_borrow_enabled():
+    """闪购助手 0.10.0 起才有 checked（面板上的勾），0.9.x 没有这个键。这里不补默认值，也不拿 enabled 顶：
+    前端靠 null 才知道该退回老规则（flash.js flashAutoRenewOff）。"""
+    for enabled in (True, False, None):
+        assert fs.normalize({"products": [{"enabled": enabled}]})["products"][0]["checked"] is None
 
 
 def test_product_ids_are_strings():
@@ -365,7 +373,7 @@ def test_the_published_state_has_exactly_the_message_keys():
     assert set(state) == {"conn", "why", "stale", "updated_ms", "app_version", "page", "running", "paused_reason",
                           "products", "products_total", "alerts", "attention", "stuck_count", "control"}
     assert set(state["products"][0]) == {"id", "title", "state", "round", "ends_ms", "next_ms", "stock_left",
-                                         "stock_total", "renewals", "enabled", "position", "skip", "stuck"}
+                                         "stock_total", "renewals", "enabled", "checked", "position", "skip", "stuck"}
     assert state["conn"] == "ok" and state["why"] is None and state["stale"] is False and state["updated_ms"] is None
     assert state["control"] is None           # 控制指令的进度由 app/pipeline_flash.py 发布前叠上
     assert set(state) == set(fs.empty_state("ok"))
@@ -445,6 +453,25 @@ def stopped_doc(**over):
 
 def stuck_of(state):
     return {p["id"][-1]: p["stuck"] for p in state["products"]}
+
+
+@pytest.mark.parametrize("checked, enabled, stuck", [
+    (True, False, False),         # 0.10.0：没动过、还没闪购，面板上打勾但 enabled=false：不算卡住
+    (False, False, False),        # 主播取消了勾选
+    (False, True, True),          # 卡住只认 enabled：checked 只管「不自动续开」那句话
+    (True, True, True),
+    (None, True, True),           # 0.9.x
+    (None, False, False),
+])
+def test_stuck_looks_at_enabled_and_never_at_checked(checked, enabled, stuck):
+    tracker = fs.StatusTracker()
+    doc = stopped_doc()
+    doc["products"][0].update(enabled=enabled, checked=checked)
+    track(tracker, doc, mono=0.0)
+    state = track(tracker, doc, mono=61.0)
+    assert stuck_of(state)["3"] is stuck
+    assert ("stuck" in state["attention"]) is stuck
+    assert next(p for p in state["products"] if p["id"].endswith("3"))["checked"] is checked
 
 
 def test_a_stopped_product_is_stuck_only_after_sixty_seconds():
@@ -611,7 +638,7 @@ def test_products_are_sorted_by_what_needs_a_person_first():
            "products": [{"product_id": str(i), "state": s, "enabled": True} for i, s in enumerate(
                ["ended_by_user", "live", "brand_new", "no_sale", "stopped", "between_rounds", "unknown",
                 "pending", "live", None, "stopped"])]}
-    doc["products"][10]["enabled"] = False        # 不自动续开的 stopped 永远不算卡住
+    doc["products"][10]["enabled"] = False        # enabled=false 的 stopped 永远不算卡住
     track(tracker, doc, mono=0.0)
     state = track(tracker, doc, mono=61.0)
     order = [(p["state"], p["stuck"]) for p in state["products"]]

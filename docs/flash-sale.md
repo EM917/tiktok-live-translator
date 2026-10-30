@@ -86,7 +86,7 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
     no_stock（没有库存）、max_renewals（续开次数到上限）、auto_start_off（没开自动开始）、no_position（读不到序号），
     0.9.2 起还有 next_to_pin（置顶商品下面的第一个商品，按列表顺序，也就是下一个要置顶的那个），0.9.2.2 起还有
     top_n（Buy now 列表从上往下的前 N 个，N 在闪购助手面板上设、默认 2：不点 Start，也不重新设置）。`enabled=false` 的商品
-    不标 skip，只看 enabled。本程序不分版本：skip 不为 null 就不算卡住（§6），那一行写闪购助手给的原因，七句短说明
+    不标 skip，只看 enabled（「不自动续开」那句话 0.10.0 起看 `checked`，见下面的商品 `checked`）。本程序不分版本：skip 不为 null 就不算卡住（§6），那一行写闪购助手给的原因，七句短说明
     各个版本都对。哪个商品标 slot_1、next_to_pin、no_position、top_n，各版本不一样：
     - 0.9.2：1 号位一直留着（slot_1），有置顶时 next_to_pin 那个也留，两个代码会同时出现；next_to_pin 那个同时又是
       1 号位时报 slot_1。读不到序号的报 no_position；
@@ -98,6 +98,12 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
   - `alerts[].level`：error（报警）、warn（失败、跳过、暂停、等确认）、info。
 - 商品 `position`（0.8.2 起）：卡片左边的序号（整数），取最后一次在屏幕上看到这张卡片时的值；从没出现过、读不到时为 null。
   0.8.2 以前没有 `skip`、`position` 这两个键，都当 null。
+- 商品 `checked`（0.10.0 起，布尔）：面板上的勾现在画成什么样。取消勾选是 false，没动过、还没闪购是 true，没运行时已停的也是 true；
+  运行中已停、又从没进过名单的也是 false，所以 false 不一定是主播取消的。`enabled` 为 false 时，`checked` 为 true 是还没进名单但允许进，
+  为 false 是闪购助手不会去动它，这两种 false 里「不自动续开」都成立。0.9.x 没有这个键，
+  也不补默认值，本程序当 null（读不出、不是布尔同样当 null）。`enabled` 的含义不变，但 0.10.0 起它不再等于面板上的勾：
+  主播没动过、还没闪购（或没运行时已停）的商品，面板上打勾、有闪购时自动加入，`enabled` 却是 false；主播真取消勾选的也是 false。
+  所以「不自动续开」那句话看 `checked`，卡住、等续开和排序照旧只认 `enabled`（§6）。
 - `alerts` 最多 20 条，最早的在前。页面上跑的还是旧脚本时它一直是空数组，这是正常的，不能当成出错。
 - 一场最多 300 个商品（实际见过 103 个）。0.8.0 起每翻完一轮刷新一次 Buy now 列表，列表先变短再补回
   （102 个先变 30 个），排在后面的商品会暂时不在 `/status` 里（§6 的卡住计时因此不随它清零）。
@@ -116,7 +122,7 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 | `stale` | 只在 `conn=ok` 时可能为 true，见 §5 |
 | `updated_ms` | 只在 `stale` 为 true、且 `updated_at` 认得出时是 epoch 毫秒（页面写「上次更新 HH:MM:SS」），其余为 null。不下发 `updated_at` 本身：它每 2 秒变一次，下发了去重就失效 |
 | `app_version`、`page`、`running`、`paused_reason` | 照接口，清洗过 |
-| `products[]` | `{id, title, state, round, ends_ms, next_ms, stock_left, stock_total, renewals, enabled, position, skip, stuck}`，最多 300 个，**后端已排好序**（§6）。`position`、`skip` 照接口（0.8.2 以前都是 null），`skip` 认不出的代码原样（清洗后） |
+| `products[]` | `{id, title, state, round, ends_ms, next_ms, stock_left, stock_total, renewals, enabled, checked, position, skip, stuck}`，最多 300 个，**后端已排好序**（§6）。`position`、`skip` 照接口（0.8.2 以前都是 null），`skip` 认不出的代码原样（清洗后）；`checked` 照接口（0.10.0 起有，0.9.x 是 null，不补默认值，§3） |
 | `products_total` | 闪购助手给了多少个商品（含超出 300 被截掉的）。比 `products` 长时页面在摘要末尾写「未列出 n」，不静默丢掉 |
 | `alerts[]` | `{at_ms, level, text}`，最后 20 条，最早的在前 |
 | `attention` | 要人处理的原因代码，已按浮层主句的优先级排好，见 §7。空表 = 不变色 |
@@ -151,6 +157,7 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 
 - **卡住**：商品 `state=stopped`、`enabled=true`、`skip=null`，且闪购助手 `running=true`、`paused_reason=null`，
   **连续 60 秒**都这样。`skip` 不为 null 是闪购助手说了故意不续开（1 号位、没库存……），停多久都不算卡住。
+  `checked`（0.10.0 起，§3）不参与，只认 `enabled`：`checked=true`、`enabled=false` 的商品停着不算卡住。
   后端按 `product_id` 用单调时钟记起点。60 秒来自闪购助手会话的实测：续开在屏幕上 2–5 秒，循环闪购重设 8–15 秒，
   商品多、卡片不在可视区时 30–40 秒；0.8.1 起停了以后改走 ⚡ 重设，回到进行中要 10–20 秒，中间短暂是 pending。
   一停就变色的话，每次正常续开按钮都会闪一下橙色。
@@ -161,7 +168,14 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
   从头计），表最多记 600 个，多了先丢最久没出现的。没有 id 的永远不算。
 - 浮层里条件满足、还没满 60 秒的商品写「等闪购助手续开」，满了写「停了超过 1 分钟」。前端的条件
   （`flash.js flashWaitingRenewal`）和后端的 `flash_sale.stuck_candidate` 一字不差：`enabled` 只认 true，`skip` 只认 null
-  （没有这个键也算 null）。两边吃同一张表 `tests/fixtures/flash_sale/shared-rules.json`（`waiting_renewal`）。
+  （没有这个键也算 null），`checked` 不看。两边吃同一张表 `tests/fixtures/flash_sale/shared-rules.json`（`waiting_renewal`）。
+- 那一行细节的最后写不写「不自动续开」（`flash.js flashAutoRenewOff`，只有前端有这条规则，后端只把 `checked` 规整后传下去）：
+  - `checked` 是 false：写，哪怕 `enabled` 是 true，面板上的勾为准；
+  - `checked` 是 true：不写，哪怕 `enabled` 是 false（0.10.0 起没动过、还没闪购的商品就是这样）；
+  - 没有或读不出（null、不是布尔）：退回老规则，`enabled` 是 false 才写。0.9.x 没有这个键，显示一字不变。
+
+  这句和「等闪购助手续开」各看各的键。`checked=false`、`enabled=true` 的商品停着时两句都会写；照 0.10.0 的定义，主播取消勾选时
+  `enabled` 也是 false，正常不会有这个组合。
 - `skip` 不为 null 的商品，那一行细节的最前面写闪购助手说的原因（`flash.js flashSkipText`，前五句的文案是闪购助手会话给的，
   next_to_pin 那句照它 0.9.2 的说明写，top_n 那句照 slot_1 的句式写；0.9.2.1 改的是哪个商品标哪个代码（§3），
   每个代码的意思没变）：
@@ -169,7 +183,7 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
   auto_start_off「没开自动开始」、no_position「读不到序号，先不处理」；认不出的写「不续开：」加原样的代码（`translate="no"`）。`position` 写成标题前的
   「#12」（`.flash-pos`，在会被省略号截掉的标题外面，两种语言一样）；null 就不写。英文见 `docs/i18n-style.md` §3 K #175。
 - **排序**（要人看的在前）：卡住的 stopped → pending → unknown → live → between_rounds →
-  没卡住的 stopped（还在续开计时里、不自动续开、故意不续开）→ no_sale → ended_by_user → 认不出的。**同一档里**按
+  没卡住的 stopped（还在续开计时里、`enabled=false`、故意不续开，`checked` 不参与）→ no_sale → ended_by_user → 认不出的。**同一档里**按
   `position`（卡片序号）从小到大，null 排在最后，再相同保持闪购助手给的顺序（稳定排序）。后端 `flash_sale._rank` 和
   前端 `flash.js flashRank` 是同一张档位表；档内的规则后端在 `flash_sale.product_sort_key`，前端在 `flashSortProducts`，
   两边吃 `shared-rules.json` 的 `sort`。前端再排一次是稳定排序，对后端排好的结果没有影响。
@@ -194,7 +208,7 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
    的也列），主句照样写「有 n 条新的问题」，关上再开才收起——不然让按钮变色的那一条一打开就从浮层里不见了。
    浮层开着时新来的问题记录照样算没看过（按钮再变色），下次打开才记。
 
-不变色：连不上（连接被拒，闪购助手没开）、正在查看、not_started、loading、no_page、`enabled=false` 的 stopped、
+不变色：连不上（连接被拒，闪购助手没开）、正在查看、not_started、loading、no_page、`enabled=false` 的 stopped（不管 `checked` 是什么）、
 `skip` 不为 null 的 stopped、ended_by_user、no_sale、unknown。
 
 **开始以后的过渡**（用户 10-27 定）：「开始」或「继续」被闪购助手接受、还在等它生效的那段时间（`control` 是

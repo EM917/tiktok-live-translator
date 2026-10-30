@@ -17,7 +17,7 @@ flash_sale.app_path（本机指定的位置，configured_app 只认完整路径�
 - `updated_at` 每次成功判断都刷新（后台每 2 秒一次），UTC、以 Z 结尾；page=error 时不刷新；
   还没判断过时为 null。陈旧就看它多久没变，见 StatusTracker。
 - 代码表（page、paused_reason、state、level，0.8.2 起的商品 skip）以契约为准；认不出的代码原样（清洗后）
-  交给前端显示。旧版没有的字段（skip、position）当 null。
+  交给前端显示。旧版没有的字段（skip、position，0.10.0 起的 checked）当 null。
 
 9334 上回话的不一定是闪购助手（本机任何进程都能占这个端口），所以读体限长、宽容解析：
 不认识的键丢掉，类型不对的当 None，字符串截长、去掉控制字符。
@@ -133,7 +133,7 @@ START_QUIET_PAGES = ("loading", "error", "no_list")
 
 # 推给页面前商品的排序（闪购助手会话 10-27 定的优先级）：要人看的在前。同一档里按卡片序号 position 排、
 # 没有序号的在后，再相同就保持闪购助手给的顺序（product_sort_key）。
-# stopped 只有卡住的（stuck）排第一档；还在续开计时里的、不自动续开的排在进行中那几档后面
+# stopped 只有卡住的（stuck）排第一档；还在续开计时里的、enabled 不是 true 的排在进行中那几档后面
 _RANK_STUCK = 0
 _RANK = {"pending": 1, "unknown": 2, "live": 3, "between_rounds": 4, "stopped": 5,
          "no_sale": 6, "ended_by_user": 7}
@@ -633,6 +633,9 @@ def _product(raw):
         "stock_total": _int(raw.get("stock_total")),
         "renewals": _int(raw.get("renewals")),
         "enabled": _bool(raw.get("enabled")),
+        # 闪购助手 0.10.0 起才有：面板上的勾现在画成什么样。0.9.x 没有这个键，这里也不补默认值（当 null，前端退回老规则）。
+        # 只管「不自动续开」那句话（flash.js flashAutoRenewOff）；卡住和排序不看它，见 stuck_candidate
+        "checked": _bool(raw.get("checked")),
         # 闪购助手 0.8.2 起才有，旧版没有这两个键：都当 null。position 是卡片左边的序号（最后一次在屏幕上
         # 看到这张卡片时的值），skip 是「故意不续开」的原因代码（slot_1、no_stock、max_renewals、
         # auto_start_off、no_position，0.9.2 起还有 next_to_pin，0.9.2.2 起改成 top_n、不再发 slot_1 和 next_to_pin；认不出的原样交给前端）。哪个商品标 slot_1、
@@ -681,8 +684,9 @@ def normalize(raw):
 def stuck_candidate(product, state):
     """这个商品此刻是否满足「卡住」的条件（还没算时长）：state=stopped、enabled=true、skip=null，
     且闪购助手在运行（running=true）、没暂停（paused_reason=null）。skip 不为 null 是闪购助手说了
-    故意不续开（1 号位、没库存……），停着是它定的，不是卡住。前端 flash.js flashWaitingRenewal 和这里一字不差，
-    tests/fixtures/flash_sale/shared-rules.json 的 waiting_renewal 两边各测一遍。"""
+    故意不续开（1 号位、没库存……），停着是它定的，不是卡住。checked（0.10.0 起，面板上的勾）不参与，只认 enabled。
+    前端 flash.js flashWaitingRenewal 和这里一字不差，tests/fixtures/flash_sale/shared-rules.json 的 waiting_renewal
+    两边各测一遍。"""
     return (product.get("state") == "stopped" and product.get("enabled") is True
             and product.get("skip") is None
             and state.get("running") is True and state.get("paused_reason") is None)

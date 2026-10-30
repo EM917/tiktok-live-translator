@@ -35,7 +35,32 @@ export function makeEls(doc) {
 
 /** 一个商品（字段照 SAMPLE），extra 盖在上面。 */
 export const product = (state, extra = {}) => Object.assign({ id: "1000000000000000099", title: "Test Item (Fictional)", state,
-  round: null, ends_ms: null, next_ms: null, stock_left: null, stock_total: null, renewals: 0, enabled: true, stuck: false }, extra);
+  round: null, ends_ms: null, next_ms: null, stock_left: null, stock_total: null, renewals: 0, enabled: true, checked: null, stuck: false }, extra);
+
+// 「不自动续开」那句写不写（flash.js flashAutoRenewOff）：tests/flash.test.mjs、flash.en.test.mjs 各测一遍。只有前端有这条规则，
+// 所以不放 shared-rules.json。fields 里没写 checked 的就是没有这个键（0.9.x），autoRenewProduct 会把默认的 null 删掉。
+export const AUTO_RENEW_OFF = [
+  { why: "取消了勾选", fields: { checked: false, enabled: false }, off: true },
+  { why: "面板上的勾为准，哪怕 enabled 是 true", fields: { checked: false, enabled: true }, off: true },
+  { why: "勾着", fields: { checked: true, enabled: true }, off: false },
+  { why: "0.10.0 没动过、还没闪购：打着勾，enabled 却是 false，不能说不自动续开", fields: { checked: true, enabled: false }, off: false },
+  { why: "0.9.x 没有这个键：enabled=true 不写", fields: { enabled: true }, off: false },
+  { why: "0.9.x 没有这个键：enabled=false 才写", fields: { enabled: false }, off: true },
+  { why: "没有这个键、enabled 也读不出：不写", fields: { enabled: null }, off: false },
+  { why: "checked 是 null：退回老规则", fields: { checked: null, enabled: true }, off: false },
+  { why: "checked 是 null：退回老规则", fields: { checked: null, enabled: false }, off: true },
+  ...[0, 1, "", "false", "true", {}, []].flatMap((checked) => [
+    { why: "checked 不是布尔：退回老规则，" + JSON.stringify(checked), fields: { checked, enabled: true }, off: false },
+    { why: "checked 不是布尔：退回老规则，" + JSON.stringify(checked), fields: { checked, enabled: false }, off: true },
+  ]),
+];
+
+/** 表里一行对应的商品：stopped，别的字段照 product()；fields 里没写 checked 就删掉这个键。 */
+export function autoRenewProduct(fields) {
+  const p = product("stopped", fields);
+  if (!("checked" in fields)) delete p.checked;
+  return p;
+}
 
 /** SAMPLE 的一份深拷贝，extra 盖在上面。 */
 export const st = (extra = {}) => Object.assign(JSON.parse(JSON.stringify(SAMPLE)), extra);

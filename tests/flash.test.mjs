@@ -12,7 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { SAMPLE, NOW, makeFlashDoc, makeEls, product, st } from "./flash-fixtures.mjs";
+import { SAMPLE, NOW, makeFlashDoc, makeEls, product, st, AUTO_RENEW_OFF, autoRenewProduct } from "./flash-fixtures.mjs";
 
 const require = createRequire(import.meta.url);
 const F = require("../web/flash.js");
@@ -276,6 +276,64 @@ test("样式：摘要的每一段是 inline-block（style.css .flash-summary-par
   const m = /\n\.flash-summary-part \{([^}]*)\}/.exec(css);
   assert.ok(m, "style.css 里要有 .flash-summary-part");
   assert.match(m[1], /display: inline-block/);
+});
+
+test("不自动续开：checked 为准，没有或读不出才看 enabled（闪购助手 0.10.0 起 enabled 不再等于面板上的勾）", () => {
+  assert.ok(AUTO_RENEW_OFF.length >= 9);
+  for (const c of AUTO_RENEW_OFF) {
+    const p = autoRenewProduct(c.fields);
+    assert.equal(F.flashAutoRenewOff(p), c.off, c.why);
+    assert.deepEqual(F.flashProductParts(p, {}, NOW).detail, c.off ? ["不自动续开"] : [], c.why);
+  }
+  assert.equal(F.flashAutoRenewOff(null), false);
+  assert.equal(F.flashAutoRenewOff(undefined), false);
+  // 还是写在细节的最后
+  const late = F.flashProductParts(product("stopped", { checked: false, enabled: true, stock_left: 4, renewals: 1 }), {}, NOW);
+  assert.deepEqual(late.detail, ["库存 4", "续开 1 次", "不自动续开"]);
+});
+
+test("0.9.x 的显示一字不变：没有 checked 这个键和它是 null，两种都和只看 enabled 时一样", () => {
+  const running = { running: true, paused_reason: null };
+  for (const base of SAMPLE.products) {
+    for (const enabled of [true, false, null]) {
+      for (const state of [SAMPLE, running, {}]) {
+        const withNull = Object.assign({}, base, { enabled, checked: null });
+        const without = Object.assign({}, withNull);
+        delete without.checked;
+        const parts = F.flashProductParts(without, state, NOW);
+        assert.deepEqual(F.flashProductParts(withNull, state, NOW), parts);
+        assert.equal(parts.detail.includes("不自动续开"), enabled === false);
+      }
+    }
+  }
+});
+
+test("checked 不碰卡住和等续开：只认 enabled", () => {
+  const running = { running: true, paused_reason: null };
+  // 0.10.0 没动过、还没闪购的商品：既不算卡住、不等续开，也不说不自动续开
+  const quiet = product("stopped", { checked: true, enabled: false });
+  assert.equal(F.flashWaitingRenewal(quiet, running), false);
+  assert.deepEqual(F.flashProductParts(quiet, running, NOW).detail, []);
+  // 后端算好的 stuck 是 false，整个浮层也不提它
+  const sum = st({ attention: [], alerts: [], products: [quiet] });
+  assert.equal(F.flashNeedsAttention(sum, 0), false);
+  assert.ok(!F.flashLines(sum, 0).map(F.flashLineText).join("").includes("停了超过 1 分钟"));
+  // 反过来 checked=false、enabled=true：两条规则各说各的，等续开照旧
+  const odd = product("stopped", { checked: false, enabled: true });
+  assert.equal(F.flashWaitingRenewal(odd, running), true);
+  assert.deepEqual(F.flashProductParts(odd, running, NOW).detail, ["等闪购助手续开", "不自动续开"]);
+  const stuck = product("stopped", { checked: false, enabled: true, stuck: true });
+  assert.deepEqual(F.flashProductParts(stuck, running, NOW).detail, ["停了超过 1 分钟", "不自动续开"]);
+});
+
+test("文档 §3：skip 那条指向商品 checked 的说明时写名字，不写「见下一条」（下一条是 alerts[].level）", () => {
+  const doc = readFileSync(new URL("../docs/flash-sale.md", import.meta.url), "utf8");
+  const skip = doc.indexOf("- 商品 `skip`");
+  const entry = doc.indexOf("\n- 商品 `checked`（0.10.0 起", skip);
+  assert.ok(skip >= 0 && entry > skip);
+  const between = doc.slice(skip, entry);
+  assert.ok(between.includes("「不自动续开」那句话 0.10.0 起看 `checked`，见下面的商品 `checked`"));
+  assert.ok(!between.includes("见下一条"));
 });
 
 test("商品一行的细节：卡住 / 等续开、倒计时、第几轮、库存、续开次数、不自动续开", () => {
