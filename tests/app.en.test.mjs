@@ -824,6 +824,50 @@ test("英文页：翻译引擎说明与密钥框、自检的读屏级别、复�
   assert.deepEqual(leftoverChinese(page), []);
 });
 
+// 不绑工作区的 Claude 密钥（2026-10-29）：工作区 ID 框只在选 Claude 时出现，框里是服务端给的在用的那个，
+// 保存时跟着发；不像 wrkspc_… 的不发、密钥框不清，提示是英文。别的引擎不发这个字段（服务端据此不动它）
+test("英文页：Claude 的工作区 ID 框", () => {
+  const page = runDesktop();
+  hello(page);
+  const row = page.el("engine-workspace-row");
+  const box = page.el("engine-workspace");
+  const select = page.el("engine-select");
+  const save = page.el("engine-save");
+  assert.ok(row.classList.contains("hidden"), "选的是 DeepL：不该出现工作区 ID 框");
+  page.push({ type: "engine", engine: "claude", keys: { ANTHROPIC_API_KEY: "…abcd" }, workspace_id: "wrkspc_01Abc",
+              active: "claude", active_label: "Claude", note: "" });
+  assert.ok(!row.classList.contains("hidden"));
+  assert.equal(box.value, "wrkspc_01Abc");
+
+  const key = page.el("engine-key");
+  box.value = "Default";                                    // 填了工作区的名字，不是 ID
+  key.value = "sk-ant-new-key";
+  save.click();
+  assert.deepEqual(page.sent.filter((m) => m.type === "set_engine"), [], "不像工作区 ID 的不发");
+  assert.equal(key.value, "sk-ant-new-key", "刚粘贴的密钥不清掉");
+  assert.equal(page.el("engine-note").textContent,
+               "A workspace ID starts with wrkspc_ followed by letters and numbers. It’s listed on the Workspaces " +
+               "page in the Claude Console. Nothing was saved. Check it and click Save again.");
+  assert.equal(save.disabled, false, "没发出去：保存按钮不进「切换中…」");
+
+  box.value = "  wrkspc_02Xyz ";
+  save.click();
+  assert.deepEqual(page.sent.filter((m) => m.type === "set_engine").pop(),
+                   { type: "set_engine", engine: "claude", api_key: "sk-ant-new-key", workspace_id: "wrkspc_02Xyz" });
+  page.fire(2500);
+  box.value = "";                                            // 清空就是不带
+  save.click();
+  assert.equal(page.sent.filter((m) => m.type === "set_engine").pop().workspace_id, "");
+  page.fire(2500);
+
+  select.value = "deepl";
+  select.fire("change");
+  assert.ok(row.classList.contains("hidden"));
+  save.click();
+  assert.ok(!("workspace_id" in page.sent.filter((m) => m.type === "set_engine").pop()));
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
 // ---- 弹幕留意（Comment Review）的接线：web/app.js 里收消息、存状态、把回调传给 web/guard.js 的那部分 ----------
 // 文案和渲染的细节在 tests/guard.test.mjs / guard.en.test.mjs；这里钉的是接线：
 // 设置行默认收起且永不自动展开；hello 里的回放不算新事件；顶部条每秒最多重画一次；

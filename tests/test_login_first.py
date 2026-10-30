@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import browser_login as bl
+from app import i18n
 from app import pipeline as pipeline_mod
 from app import resolver, settings
 from app.pipeline import Pipeline
@@ -729,11 +730,17 @@ def test_no_readable_login_raises_a_persistent_incident_and_monitoring_still_sta
     assert media == API_FLV                           # 不挡开播：照常匿名解析、照常监听
     assert banner["level"] == "warn"
     text = banner["text"]
-    assert "Safari：系统拒绝读取" in text
-    assert "Chrome" not in text and world.reads() == ["safari"]     # 这一步只读 Safari
+    first_line = text.split("\n")[0]
+    # 头一句只说登录优先那一步读了什么、看到了什么（2026-10-29）；第一行的动作是授权，不是去 Safari 里登录
+    assert first_line.startswith("解析流地址时，登录优先这一步只读 Safari 里的 TikTok 登录——Safari：系统拒绝读取。")
+    assert first_line.endswith(bl.fda_steps().split("\n")[0])
+    assert "没有读到浏览器里的 TikTok 登录" not in text
+    assert "Chrome" not in text and world.reads() == ["safari"]     # 这一步只读 Safari；Chrome 这次没被读
     assert "只把流地址给已登录的观众" in text and "其余直播间照常监听" in text
-    assert bl.SAFARI_LOGIN_STEPS in text and bl.fda_steps() in text
-    assert "自检「浏览器登录态」" in text
+    # Safari 读不了，叫人去登录是白忙。wire 把平台定成 macOS：那几步按按钮写（「打开完全磁盘访问设置」等）
+    assert bl.fda_steps(buttons=True) in text and bl.SAFARI_LOGIN_STEPS not in text
+    assert banner["fda"] == bl.fda_button_lines()
+    assert "自检" not in text and "浏览器登录态" not in text            # 那一行可能不带步骤，直播中也看不见
     assert not any(word in text for word in GUESSED_LABELS)
     assert not INCIDENT.startswith("session:")
 
@@ -751,7 +758,7 @@ def test_no_readable_login_raises_a_persistent_incident_and_monitoring_still_sta
 
 
 @pytest.mark.parametrize("observed,must_have,must_not_have", [
-    ({"safari": "blocked_by_system"}, [bl.SAFARI_LOGIN_STEPS, bl.fda_steps()], [bl.KEYCHAIN_STEPS]),
+    ({"safari": "blocked_by_system"}, [bl.fda_steps()], [bl.KEYCHAIN_STEPS, bl.SAFARI_LOGIN_STEPS]),
     ({"safari": "not_logged_in"}, [bl.SAFARI_LOGIN_STEPS], ["完全磁盘访问权限"]),
     ({"safari": "no_browser_data", "chrome": "keychain_wait"},
      [bl.SAFARI_LOGIN_STEPS, bl.KEYCHAIN_STEPS], ["完全磁盘访问权限"]),
@@ -759,11 +766,56 @@ def test_no_readable_login_raises_a_persistent_incident_and_monitoring_still_sta
 def test_no_login_notice_says_what_was_seen_and_what_to_do(observed, must_have, must_not_have):
     text = bl.no_login_notice(observed)
     assert bl.observed_text(observed) in text
+    assert "没有读到浏览器里的 TikTok 登录" not in text
     for part in must_have:
         assert part in text
     for part in must_not_have:
         assert part not in text
     assert not any(word in text for word in GUESSED_LABELS)
+
+
+def test_the_notice_says_which_browser_later_steps_borrowed(monkeypatch, tmp_path):
+    """2026-10-29 新 Mac 上的那一场：Safari 被系统拒绝读取，后面几层借用了 Chrome 的登录，三次都没拿到。
+    以前持续提示的头一句是「程序没有读到浏览器里的 TikTok 登录」，第一行叫人去 Safari 里登录。现在头一句只说
+    登录优先那一步（只读 Safari）看到了什么，照实接一句后面几步借用了 Chrome；挂不挂照旧只看那一步。"""
+    world = wire(monkeypatch, tmp_path, World())
+    world.jars["safari"] = PermissionError(1, "Operation not permitted")
+    world.jars["chrome"] = logged_in_jar()
+    world.page_with_login = GATE_PAGE              # 带着 Chrome 的登录也没拿到（那天三次都是这样）
+    fake_clock(monkeypatch, world)                 # 借登录抓页前那 8 秒的间隔不真等
+    p, server, audit = make_pipeline(monkeypatch, tmp_path)
+
+    with pytest.raises(resolver.ResolveError) as exc:
+        run(p._resolve_media(ROOM))
+    assert exc.value.kind == "browser_only"
+    assert exc.value.login == {"safari": bl.BLOCKED, "chrome": bl.OK}
+    assert "chrome" in world.reads()
+    banner = server.config["incidents"][INCIDENT]
+    text = banner["text"]
+    first_line = text.split("\n")[0]
+    assert first_line.startswith("解析流地址时，登录优先这一步只读 Safari 里的 TikTok 登录——Safari：系统拒绝读取。"
+                                 "同一次解析里，后面几步借用了 Chrome 里的 TikTok 登录。"), first_line
+    assert first_line.endswith(bl.fda_steps().split("\n")[0])
+    assert "没有读到浏览器里的 TikTok 登录" not in text and bl.SAFARI_LOGIN_STEPS not in text
+    en = i18n.render(text, i18n.EN)
+    assert en.startswith("When looking up the stream URL, the app first reads the TikTok sign-in from Safari "
+                         "only. Safari: macOS didn’t allow access. Later steps of the same lookup used the "
+                         "TikTok sign-in from Chrome. "), en
+    assert "didn’t find a TikTok sign-in in your browsers" not in en
+    assert SENTINEL not in text and SENTINEL not in en
+
+
+def test_a_successful_lookup_mentions_only_what_its_records_show(monkeypatch, tmp_path):
+    """成功时没有 ResolveError.login：只有带登录抓直播页那几层的记录里有 login（Pipeline._login_seen）。"""
+    seen = Pipeline._login_seen([
+        {"layer": resolver.LOGIN_LAYER, "outcome": "no_login", "login": {"safari": bl.BLOCKED}},
+        {"layer": "官方接口", "outcome": "url", "why": "safari: blocked_by_system; chrome: ok"},
+        {"layer": resolver.LOGIN_RETRY_LAYER, "outcome": "none", "login": {"chrome": bl.OK}},
+        {"layer": "直播页兜底", "outcome": "none", "login": {"chrome": bl.NOT_LOGGED_IN}},
+    ])
+    assert seen == {"safari": bl.BLOCKED, "chrome": bl.OK}      # 读到过登录的不被后面的结果盖掉
+    assert Pipeline._login_seen([{"layer": "官方接口"}], {"edge": bl.OK}) == {"edge": bl.OK}
+    assert Pipeline._login_seen(None) == {}
 
 
 def test_incident_is_left_alone_when_nothing_was_read(monkeypatch, tmp_path):

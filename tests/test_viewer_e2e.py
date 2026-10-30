@@ -15,6 +15,7 @@ from aiohttp import WSMsgType
 from app import viewer as viewer_mod
 from app.server import CaptionServer
 from app.viewer import ViewerHub
+from tests import socket_net
 from tests.helpers import run
 
 TIMEOUT = 10.0
@@ -155,10 +156,11 @@ def test_the_phone_page_and_its_assets_are_served_with_the_headers(web_dir):
 def test_stopping_the_share_closes_the_port(web_dir):
     async def scenario():
         async with Harness(web_dir) as h:
-            base = h.base
+            base, port = h.base, h.hub.port
             await h.hub.stop("off")
             assert h.hub.running is False
-            with pytest.raises(aiohttp.ClientError):
+            # 要测的就是刚关掉的这个端口连不上：它已经不是本进程开着的服务器，向测试总网登记一下（tests/socket_net.py）
+            with pytest.raises(aiohttp.ClientError), socket_net.allowing(port):
                 async with h.session.get(base + "/", timeout=TIMEOUT):
                     pass
             # 幂等：再关一次什么都不做（__aexit__ 还会关第三次）

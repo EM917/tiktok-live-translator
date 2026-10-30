@@ -12,6 +12,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests import socket_net  # noqa: E402  上一行先把仓库根放进 sys.path
+
 
 @pytest.fixture(autouse=True)
 def _keep_audit_out_of_the_real_log_dir(tmp_path, monkeypatch):
@@ -94,6 +96,7 @@ def _no_claude_key_is_inherited(monkeypatch, _fresh_dir):
     from app import settings
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID", raising=False)   # 开发机上设过的话，请求头里会多出它
     monkeypatch.delenv("TLT_GUARD_CLAUDE_MODEL", raising=False)
     monkeypatch.setattr(settings, "SETTINGS_FILE", _fresh_dir("no-saved-keys") / "settings.json")
 
@@ -267,8 +270,9 @@ def _glossary_net_summary(tr):
 
 
 def pytest_sessionfinish(session):
-    """碰过真实词表的用例已经各自失败；收集、导入阶段碰的不属于任何用例，也要让这次运行失败。"""
-    if _GLOSSARY_NET["hits"] and session.exitstatus == pytest.ExitCode.OK:
+    """碰过真实词表的用例已经各自失败；收集、导入阶段碰的不属于任何用例，也要让这次运行失败。测试总网
+    （tests/socket_net.py）拦下的连接同理。"""
+    if (_GLOSSARY_NET["hits"] or socket_net.hits_of_anyone()) and session.exitstatus == pytest.ExitCode.OK:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
@@ -331,13 +335,13 @@ def _chinese_ui_on_any_machine(monkeypatch):
     定，用生产里的值：守闸关着或开着某一边语义的用例自己 monkeypatch，这样开闸和把闸改回
     False 回退时，测试都不用跟着改。
 
-    与跑测试的那台机器无关（spec §3.2）：系统语言检测换成「检测不了」，三个 TLT_* 环境变量
+    与跑测试的那台机器无关（spec §3.2）：系统语言检测换成「检测不了」，四个 TLT_* 环境变量
     删掉——CI 的 Windows / macOS 跑器、开发机的系统语言都不该让结果不同。模块级状态
     （生效语言、已经警告过的坏模板）不许在用例之间泄漏。G9 运行时网全程开着。"""
     from app import i18n
 
-    monkeypatch.setattr(i18n, "system_lang", lambda: None)
-    for name in (i18n.ENV_OVERRIDE, i18n.ENV_SYSTEM, i18n.ENV_INSTALL):
+    monkeypatch.setattr(i18n, "system_langs", lambda: [])
+    for name in (i18n.ENV_OVERRIDE, i18n.ENV_SYSTEM, i18n.ENV_SYSTEM_ZH, i18n.ENV_INSTALL):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(i18n, "_state", {"choice": "system", "lang": i18n.ZH, "system": None,
                                          "override": None})
@@ -387,6 +391,7 @@ def pytest_terminal_summary(terminalreporter):
     from app import i18n
 
     _glossary_net_summary(terminalreporter)
+    socket_net.summary(terminalreporter)
     hits = sorted(set(i18n.NET_HITS))           # broadcast 和 fanout 各查同一条消息一次：去重
     counted = [h for h in hits if _net_test_id(h[4]) not in _I18N_FIXTURE_TESTS]
     skipped = len(hits) - len(counted)
@@ -420,3 +425,53 @@ def pytest_terminal_summary(terminalreporter):
         tr.write_line("{}  「{}」".format(where, text) if text else where)
         for name in sorted(names):
             tr.write_line("    " + (name or "（不在用例里）"))
+
+
+# ---- 测试总网（旁线 A，tests/socket_net.py） -------------------------------------------------
+
+# 开发机上开着用户直播用的同传、闪购助手、Ollama：测试进程里的每一个连接都经过这张网。放行的只有 127.0.0.1:9
+# 哨兵、本进程自己起的服务器、登记过的子进程端口（G10 的 Chrome）；别的当场抛 ConnectionRefusedError（查域名抛
+# socket.gaierror），记下来，下面的夹具在用例结束时判失败。清单在测试结束时的终端摘要里（pytest_terminal_summary）。
+# 导入 conftest 时就装上，收集、导入阶段的连接也拦得住（那些由 pytest_sessionfinish 让整次运行失败）
+socket_net.install()
+
+
+@pytest.fixture(autouse=True)
+def _no_connection_leaves_the_test(request):
+    """这个用例（它的 setup、call 和到这里为止的 teardown）里被测试总网拦下的连接，有就判它失败。被拦的连接在
+    被测代码那里已经是「连不上」，它可能把异常吞了、照样绿：所以要在这里另判。autouse：靠每个用例自己记得
+    不连真端口，已经被 conftest 里那几处一处一处换地址的夹具证明会漏。
+
+    记录表在开场时就拿住：socket_net_hits 换表用的 monkeypatch 要到这里之后才退回，结束时再去取，取到的是
+    专测这张网的用例自己那张。"""
+    hits = socket_net.record()
+    yield
+    mine = socket_net.hits_of(request.node.nodeid, hits)
+    if mine:
+        pytest.fail(socket_net.failure_text(mine), pytrace=False)
+
+
+# Ollama 的地址（app/ 里全都读 OLLAMA_URL，默认 127.0.0.1:11434）换成没人听的哨兵
+_OLLAMA_NO_ONE = "http://127.0.0.1:9"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _ollama_is_never_the_real_one():
+    """本机的 Ollama：开发机上可能正开着，直播的译文靠它。测试总网 A1 记下 6 个测试文件、21 个用例真的连了
+    127.0.0.1:11434：问 /api/tags，有的还经 translator._unload_siblings 发 keep_alive: 0，把列表里「在」的
+    别的模型从显存里卸掉（那几个用例换掉了 _ollama_models，列表是假的，卸载请求却发给了真的 Ollama）。
+    整个会话把 OLLAMA_URL 指到 127.0.0.1:9：和 CI 上一样是「Ollama 没开」。会话级：模块级夹具里造的翻译器、
+    Pipeline 也取到这个值（翻译器构造时就取）。要测「Ollama 开着」的用例照旧换掉 _ollama_models 这一层，或者
+    monkeypatch.setenv 到本机临时端口上的假服务器（tests/test_localmodel.py）；用例结束 monkeypatch 退回这里的值。"""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("OLLAMA_URL", _OLLAMA_NO_ONE)
+        yield
+
+
+@pytest.fixture
+def socket_net_hits(monkeypatch):
+    """换一张空的记录表，给专测这张网本身的用例（tests/test_socket_net.py）：它们故意去连会被拦的地址，
+    记在这里的不算违例。"""
+    hits = []
+    monkeypatch.setitem(socket_net._STATE, "hits", hits)
+    return hits

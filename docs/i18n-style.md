@@ -49,6 +49,7 @@
 | 观众（TikTok 直播间里的） | **viewers** | audience | 只指 TikTok 直播的观众 |
 | 手机同看的在看人数 | **watching**（如 “3 watching”） | viewers, people | 避开和 TikTok 观众撞词。YouTube 式的 “N watching” 单复数同形，不用处理复数 |
 | 程序 / 本程序 / 本工具 | **the app** | the program, the tool, the software | 苹果的叫法 |
+| 另一份程序 / 这个文件夹里的这一份（同一台电脑上解压了不止一份） | **another copy of the app** / **the one in this folder** | instance, installation, version | 2026-10-29 加（双击打开时窗口开到了另一份上，§3 #10a）。instance 是开发者的词；version 会被读成「另一个版本号」，而两份可以是同一个版本。指已经开着的那一份写 **the running copy** |
 | 本机 / 这台电脑 | **this computer** | this Mac, this PC, localhost | 要跨平台，Mac 和 Windows 都能用 |
 
 ### 1.2 直播、场次与状态
@@ -101,11 +102,13 @@
 | 自检 / 启动自检 | **Startup Check** | Self-Test, Self-check, Diagnostics, Health Check | health 已经被「识别落后」那条 health 提示占了。README 写的是 “Startup self-check”，界面用更短的写法 |
 | 自检项 | **check** | test, item | |
 | 通过 / 提醒 / 未生效 | **passed / warning / isn’t working** | failed（只在读屏的级别说明里用） | 「未生效」强调的是功能没起作用，不是测试没过。isn’t working 是苹果的常用说法 |
+| 现在下载（自检「语音识别」一行、首页输入框下面那一行的按钮） | **Download Now**；带大小写 **Download Now (about {n} GB)**；点了以后 **Downloading…** | Download, Prefetch, Get Model | 2026-10-29 加：待机时提前下载识别模型（app/pipeline_asr_fetch.py），只在模型还没下全时出现，连接中、直播中、下载中置灰。Now 说清是现在就下、不等开播；Prefetch 是工程师用词。那一行的说明：「模型还没下载，约 3.1 GB / model not downloaded yet, about 3.1 GB」「正在下载模型 / model downloading」。同一天（launch-2 A）首页输入框下面加了一行「语音模型还没下载（约 3.1 GB）/ The speech model isn’t downloaded yet (about 3.1 GB)」，按钮不带大小（大小在左边那句里），见 §3 #40a |
 | 翻译引擎 | **Translation Engine**；短写 **engine** | translator, provider | 提示里指这一行在哪，一律写「在「设置 > 翻译引擎」里」/ **in Settings > Translation Engine**（英文本来就是这一种）。2026-10-26（专家审查 V5）以前中文有五种：「在「翻译引擎」里」「在「设置 > 翻译引擎」里」「在页面上的「翻译引擎」里」「在页面的「翻译引擎」里」「在「翻译引擎」面板」。设置分组在直播中整块收起，所以**直播中**出现、叫人去换引擎、换模型或填密钥的提示，前面加「点「停止」后」/ **after you click Stop**（英文也可以放进句中：To switch back, click Stop, …；专家审查 U4）。启动自检里那一项（自检的「翻译引擎」一行）是另一个东西，照写「自检的「翻译引擎」一项」。**文档**（README、docs/*.md）里写界面路径照旧用 →（「设置 → 翻译引擎」/ Settings → Translation Engine），不跟着界面改成 >：文档里同一种路径还有 macOS 系统设置的多级路径（System Settings → Privacy & Security → Full Disk Access），一直是 →，读者照着点不会走错。界面文字（成对的 L() 和 data-en）一律用 >（2026-10-26 定，b6-wording 第 1 轮审查） |
 | 回退（引擎） | **fallback**；正文写 **switched to {engine}** | downgrade | |
 | 本地模型 | **local model** | offline model | |
 | 免费额度 | **free quota** | free tier | |
 | 密钥 | **API key** | token, secret | |
+| 工作区 / 工作区 ID（Claude） | **workspace** / **workspace ID** | project, org, space | Anthropic 自己的叫法：新版 Claude Console 里建密钥时可以不选工作区，这种密钥每个请求要带 `wrkspc_` 开头的工作区 ID（`app/translator.py` `WORKSPACE_ENV`，2026-10-29 加）。说这件事照接口原话写「这把密钥没有绑定工作区」/ **this API key isn’t scoped to a workspace**，前面挂上「Anthropic 说」/ **Anthropic says**——是对方说的，不是我们猜的（第八条）。**Claude Console**、Console 上的页面名 **Workspaces** 和默认工作区的名字 **Default** 照写不译，中文也写英文原名（用户照着去 Console 里找的就是这几个字） |
 | 字幕 | **captions** | subtitles | 苹果 Live Captions、Zoom、Meet 在直播场景都叫 captions；subtitles 偏影视。README 宣传语可以继续说 subtitles，界面统一用 captions |
 | 字幕字号 | **Caption size** | Font size | |
 | 清空字幕 | **Clear**（顶栏按钮），tooltip 写 **Clear caption history** | Clear Captions（放不下，见 §4） | 2026-10-23 专家审查 V3 想把按钮上的字改成 Clear Captions，G10 重量了一次：默认 1000px 窗口里品牌标签被挤到 95px（live-full）、83px（带浮窗按钮）、67 / 55px（下拉补了第五种语言），都低于 100px 的下限，1101px 也有三档低于 120px。所以按钮上仍写 Clear，「字幕」两个字交给 tooltip 说。§4 R1 原来建议的 aria-label “Clear captions” 也没有加：它对应的中文是按钮上的「清空字幕」，这句中文的英文已经是 Clear，同一句中文对应两种英文过不了 G3。换成沿用 title 那一对（清空历史字幕 / Clear caption history）不违反 G3，但和 title 是同一句话，没有多给信息，所以也不加。点第一下之后（两段式确认的武装态）写「再点确认 / Clear?」，见 §3 第 24a 行 |
@@ -130,7 +133,7 @@
 | 正在用 / 本程序 / 非本程序 | **In use / This app / Not this app** | Other | 「非本程序」的意思是「不一定是别人的」，照字面翻最诚实 |
 | 更新 / 一键更新 / 更新说明 | **Update / Update Now / Release Notes** | Upgrade | |
 | 设置 | **Settings** | Preferences | |
-| 字幕译成（顶栏下拉：字幕译成哪种语言；2026-10-20 以前叫「目标语言」） | **Captions in**（标签、aria-label）；tooltip 写 **Captions are translated into this language. To change the app language, go to Settings > App Language.**；正文写 **the language captions are translated into**，参数说明里可以简写 **caption language** | Translate to, Target Language, Language | 用户 2026-10-20 把旧标签「目标语言 / Translate to」当成了界面语言，切成 English 等界面变。标签要一眼读得出管的是字幕：标签连着选项读就是 “Captions in English”「字幕译成 English」。只写 Language 会和界面语言（App Language）分不开。中文 tooltip 是「字幕译成这种语言。界面语言在「设置 > 界面语言」里改」 |
+| 字幕译成（顶栏下拉：字幕译成哪种语言；2026-10-20 以前叫「目标语言」） | **Captions in**（标签、aria-label）；tooltip 写 **Captions are translated into this language. To change the app language, go to Settings > App Language.**；正文写 **the language captions are translated into**，参数说明里可以简写 **caption language** | Translate to, Target Language, Language | 用户 2026-10-20 把旧标签「目标语言 / Translate to」当成了界面语言，切成 English 等界面变。标签要一眼读得出管的是字幕：标签连着选项读就是 “Captions in English”「字幕译成 English」。只写 Language 会和界面语言（App Language）分不开。中文 tooltip 是「字幕译成这种语言。界面语言在「设置 > 界面语言」里改」。2026-10-29 同一种误会又来了一次（连接中、1000px 窗口里标签被省掉）：英文界面选了中文、中文界面选了 English 时，下拉下面就地弹一次这句 tooltip，外加一颗切换界面的按钮（§2.8、§3 #21a） |
 | 主播语言 | **Spoken language** | Source language, Streamer language | 说的是「识别听哪种语言」，普通用户能懂；source 是翻译行业的行话 |
 | 界面语言（新加的设置） | **App Language** | Language, Display Language | 必须和顶栏的 Captions in 一眼就能分开 |
 | 跟随系统 | **System ({resolved})**，如 “System (English)” | Auto, Default | |
@@ -142,6 +145,10 @@
 | 浏览器登录态 | **Browser Login** | Cookies, Session | |
 | 登录（动作）/ 登录（名词）/ 已登录、未登录 | **sign in** / **sign-in** / **signed in、signed-out** | log in, login, logged in | 苹果的说法；browser_login、comment_source、resolver、selfcheck 统一这么写。设置行名 Browser Login 照上一行保留；钥匙串对话框里的 login password 是 macOS 自己的叫法，照抄 |
 | 完全磁盘访问权限 | **Full Disk Access** | | 照抄 macOS 里的原名 |
+| 登录优先这一步（解析流地址时先只读一个浏览器里的 TikTok 登录，`resolver.LOGIN_LAYER`） | **the app first reads the TikTok sign-in from {browser} only**；后面借登录的几层写 **later steps of the same lookup** | the login-first layer, signed-in step | 2026-10-29 加（「没有读到 TikTok 登录」那条持续提示的头一句，`browser_login.no_login_notice`）。以前头一句是「程序没有读到浏览器里的 TikTok 登录」/ *The app didn’t find a TikTok sign-in in your browsers*：那一步只读 Safari，Chrome 读到了登录、后面几层也借用了它，这句话就说错了。现在只说那一步读了什么、看到了什么，别的浏览器读到了登录就照实接一句「同一次解析里，后面几步借用了 Chrome 里的 TikTok 登录」/ *Later steps of the same lookup used the TikTok sign-in from Chrome.* 自检「浏览器登录态」那一行也用这个说法（login-5，2026-10-29 加）：那一步要读的浏览器被系统拒绝读取、别的浏览器读到了登录时，这一行是「提醒」，列完各浏览器接一句「解析流地址时，登录优先这一步只读 Safari 里的 TikTok 登录，读不了就跳过这一步」/ *When looking up the stream URL, the app first reads the TikTok sign-in from Safari only and skips that step when it can’t read it*（英文不带句号，后面接 *. Only live streams where…*）。只写程序自己怎么走，不写 Chrome 的登录管不管用 |
+| 「完全磁盘访问权限」那几步（`browser_login.fda_steps`） | 头一句 **Follow these three steps to turn on Full Disk Access for Python:**，三步各占一行、以 **1. / 2. / 3.** 开头；第 3 步从 .app 启动时写 **Press ⌘Q to quit the app completely, then open it again.** | Go to System Settings > …（一整段） | 2026-10-29 改（新 Mac 上照一整段长文做不下来）。「终端」那几句只在从终端启动时出现：**The app was started from a terminal. Add Terminal the same way: after ⌘⇧G, paste “/System/Applications/Utilities/Terminal.app”.**；第 3 步换成 **Quit the app completely, then start it from a terminal again (for example, with Start.command). If macOS asks to quit and reopen Terminal, do that.** 已在列表里的那一行写 **If it’s already in the list with its switch on and you still see this, select it, click −, and do step 2 again.** 权限范围那句（D6）不动。macOS 上带按钮的写法（`fda_steps(buttons=True)`，持续提示和自检那一行）见下一行 |
+| 「完全磁盘访问权限」那几步旁边的按钮：打开完全磁盘访问设置 / 在访达里选中 Python / 在访达里选中终端（`browser_login.FDA_BUTTON_LABELS`，web/app.js `fdaLabel`） | **Open Full Disk Access Settings** / **Show Python in Finder** / **Show Terminal in Finder** | Reveal, Show in Finder（不带对象）, Open Settings, Open Privacy Settings | 2026-10-29 加（用户照着文字做不下来，是我们替他 open 了那一页、open -R 了解释器）。按钮名 Title Case。只在 macOS 上有，所以照 macOS 自己的叫法写 Finder，和上面跨平台的 **Open Folder** 不冲突；Show … in Finder 是访达菜单里的原词，中间放上要选中的东西。带按钮时那几步按按钮写：**1. Click Open Full Disk Access Settings. It opens System Settings > Privacy & Security > Full Disk Access.** / **2. Click Show Python in Finder, drag the selected file into the list on that page, and turn on its switch. File to add:**（两个路径时 **(do this for each path)**、**Files to add:**）/ 从终端启动时另起一行 **The app was started from a terminal. Click Show Terminal in Finder, drag Terminal into the same list, and turn on its switch.** 打开失败的 notice 只写 open 的退出码和自己能做的一步：**Couldn’t open the Full Disk Access page (open returned {rc}). You can open System Settings > Privacy & Security > Full Disk Access yourself.** / **Couldn’t show “{path}” in Finder (open returned {rc}). You can click + under the Full Disk Access list, press ⌘⇧G, paste this path, press Return, and click Open.**；不是 macOS 时硬发过来回 **This button is only for macOS. Nothing was opened on this computer.** |
+| 我加好了，再查一次（持续提示和自检「浏览器登录态」那一行上的按钮） | **Check Again** | I’ve Added It, Recheck, Refresh | 2026-10-29 加。按钮名 Title Case。点了让程序当场重看一次（`recheck_browser_login`），结果走 notice：**The app can read {browser} data now and found a TikTok sign-in.** / **macOS still doesn’t allow the app to read {browser} data.** + 第 3 步 + **After it reopens, the Browser Login row in Settings > Startup Check shows what the app reads now.** / **The app can read {browser} data now, but there’s no TikTok sign-in in it.** + 登录那一步 / **Checked again. {observed}.**。中文的「我加好了」英文不照搬：英文按钮放不下一句话，Check Again 已经说清是再查一次 |
 | 直播流解析 | **Stream Lookup** | Stream Resolution | 「解析」对用户来说就是去找流地址。Resolution 容易被当成分辨率 |
 | 音频组件 ffmpeg | **Audio (ffmpeg)** | Audio Component | ffmpeg 全小写，是它的品牌写法 |
 
@@ -418,11 +425,13 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 
 | 位置 | 中文界面 | 英文界面 |
 |---|---|---|
-| 设置行名 | 界面语言 · Language（带上英文，困在中文界面里的英文用户也找得到） | App Language |
+| 设置行名 | 界面语言 · Language（带上英文，困在中文界面里的英文用户也找得到） | App Language · 界面语言（2026-10-29 起对称地带上中文，困在英文界面里的中文用户也找得到。带上的那段是名字：`lang` 是它自己的语言、标 translate="no"，按页面语言二选一露出） |
 | 行右侧摘要 | 跟随系统 · 中文 / 中文 / English | System · English / 中文 / English |
 | 选项 1 | 跟随系统（中文） | System (English) |
 | 选项 2 / 3 | 中文 / English | 中文 / English |
 | 行下方的说明 | 切换后窗口会刷新一次。手机同看页按各自手机的语言显示。 | The window reloads once after you switch. Phone Viewing pages follow each phone’s language. |
+| 「字幕译成」就地提示里的按钮（§3 #21a） | 字：English | 字：中文 |
+| 首页的两段切换（§3 #33a） | 字：中文 / English；组名（aria-label）：界面语言 | 字：中文 / English；组名：App Language |
 
 语言名永远用该语言自己的写法（中文 / English）。这样用户就算落进一个看不懂的界面，也能认出自己的语言，切回去。
 
@@ -445,9 +454,11 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 5 | window_close.py:10 | 正在监听直播，关闭窗口会停止违禁词监听。确定关闭？ | Close the window? This stops monitoring the live stream, including banned-term detection. | pywebview 的退出确认框 |
 | 6 | window_close.py:11/12 | 关闭 / 取消 | Close / Cancel | |
 | 7 | main.py:146/174 | 知道了 / 好 | OK | 原生对话框的按钮 |
+| 7a | bootstrap.py LAUNCH_TEXT | 正在启动 TikTok 直播同传，窗口准备好后会自己打开。 | Starting TikTok Live Translator. The window opens on its own when it’s ready. | 2026-10-29 加：双击 .app 到窗口出来之间的原生提示，等 4 秒才弹（启动快就不弹），窗口开好时由最终进程关掉。按钮照上一行 |
 | 8 | index.html:543 | 请不要直接打开这个文件 / 回到解压出来的文件夹，双击…启动程序，字幕界面会自动打开。 | Don’t open this file directly. / Go back to the unzipped folder and double-click TikTok Live Translator.app (Mac) or Start.bat (Windows). The caption window opens automatically. | 这段内联脚本跑得最早，什么都还没加载：中英两段并列，不读 `navigator.language` |
 | 9 | viewer.html:6 | 手机同看 · TikTok 直播同传 | Phone Viewing · TikTok Live Translator | |
 | 10 | pipeline.py:1799 | 直播合规监听中 | Monitoring a live stream | macOS 电源断言的原因文字，只在 `pmset` 里看得到 |
+| 10a | instance.py other_install_text（main.py 双击打开、端口上已有本程序、不是这个文件夹里的这一份时） | 另一份程序（v{ver}，不是这个文件夹里的这一份）已经在运行，这次打开的是它。/ 另一份程序（不是这个文件夹里的这一份）已经在运行，这次打开的是它。/ 程序已经在运行，但它没有说自己是哪个文件夹里的那一份，这次打开的是它。后面都接：要用这个文件夹里的这一份，请先退出正在运行的那一份，再重新打开。 | Another copy of the app (v{ver}, not the one in this folder) is already running, so that copy opened instead. / Another copy of the app (not the one in this folder) is already running, so that copy opened instead. / The app is already running but didn’t report which folder it’s from, so that copy opened instead. + To use the one in this folder, quit the running copy first, then open this one again. | 2026-10-29 加。系统对话框（`_info_dialog`，按钮「知道了 / OK」），照旧打开已有实例，只是说清楚。第三句给加 X-TLT-Install 之前的版本（0.19.0 和更早）：它没说，就照实写没说，不猜它是旧版还是同一份。窗口模式带了 `--url` 时和「这次给的直播间地址没有自动开始」并进同一个框，中间空一行 |
 
 ### B. 顶栏
 
@@ -464,6 +475,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 19 | app.js:2240 | 报警开 | Alerts on | 52 → 74（含内边距），见 §4 R6 |
 | 20 | app.js:2262 | 品牌 · {name} | Brand · {name} | 143 → 154 |
 | 21 | index.html:55–62 | 字幕译成（标签 / aria）；title 见 §1 | Captions in | 2026-10-20 由「目标语言 / Translate to」改名。直播中 ≤1080px 时隐藏，首页一直露出；52 → 68（G10 实测，旧的 Translate to 是 74） |
+| 21a | index.html #target-hint、app.js showTargetHint | 正文同 #21 的 title（同一对，不新增句子）；按钮字是那种语言的自称（中文 / English，translate="no"） | 正文同 #21 的 title；按钮字同左 | 2026-10-29 加。英文界面选了中文（简体或繁体）、中文界面选了 English 时，下拉下面弹一次（每页一次，8 秒后自己收起，指针或焦点进去就不再按时收）。按钮在待机、连接中、直播中都给（用户 10-29 定：直播中设置分组藏着，这是那时唯一的入口；切换只让页面重载一次，不停监听），只有 `--ui-lang` 固定时不给。按钮不另写 aria-label：名字就是自称本身，读屏照按钮的 `lang` 念（aria-label 也会跟着 `lang` 被念成另一种语言的声音，英文页上还多一处中文），提示那句由 aria-describedby 接上。同首页的两段切换（#33a） |
 | 22 | index.html:68–70 | 字幕字号（title / aria） | Caption size | |
 | 23 | index.html:76 | 清空字幕 | **Clear** | 76 → 56。“Clear Captions” 要 114，放不下，见 §4 |
 | 24 | index.html:76 title | 清空历史字幕 | Clear caption history | |
@@ -482,13 +494,15 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | # | 位置 | 中文 | English | 宽度 / 备注 |
 |---|---|---|---|---|
 | 33 | index.html:298 | 输入 TikTok 直播间地址或 @用户名 | Enter a TikTok Live Link or @username | 232 → 约 330（按字符数估算，未实测），在 600 宽的容器里仍是一行。2026-10-15 并进了原 #34；ⓘ（#35 的按钮）挪到标题右边，同在 `.sp-title` 里居中，不放进 `<h2>`（否则读屏会把「输入说明」念进标题） |
+| 33a | index.html #lang-quick | 中文 / English（两颗按钮的字，语言自称）；组名（aria-label）界面语言 | 中文 / English；组名 App Language | 2026-10-29 加（用户：中文用户困在英文界面里认不出设置里的 App Language）。叠在标题区右上角，和图标同一行，不挤动居中的标题：英文标题约 330px，600 宽的一列里两边各只剩约 100px，并排放不下。按钮字是数据（`lang` 各自的语言、translate="no"），不另写 aria-label，读屏用按钮自己的 `lang` 念。只切中文、英文，「跟随系统」只在设置那一行选；按下的是此刻的界面语言，点它什么都不发。G10 的 home-* 场景量它不压图标、不压标题、不出窗口 |
 | 34 | （已删）标题下面的说明行 | — | — | 2026-10-15 并进 #33；原来是「粘贴直播间链接，或只输入主播用户名（如 @somebody）」 |
 | 35 | index.html:255 title | 输入说明 | About links | |
 | 36 | index.html:268 | https://www.tiktok.com/@主播用户名/live | https://www.tiktok.com/@username/live | 占位文字 |
 | 37 | index.html:269 | 开始翻译 | **Start** | 96 → 78（含内边距） |
 | 38 | index.html:274 | 也可以直接粘贴 .flv / .m3u8 流地址。 | You can also paste a .flv or .m3u8 stream URL. | |
 | 39 | index.html:275 | 个别直播间 TikTok 不把流地址给程序。这时把直播间链接和浏览器里的 .flv 地址一起粘进来（中间空格隔开）：前者管弹幕和词表，后者作音频源。 | For some live streams, TikTok doesn’t provide a stream URL to the app. In that case, paste the live link and the .flv URL from your browser together, separated by a space. The link is used for comments and glossaries, and the .flv URL for audio. | 第八条，只写观察和能做的事 |
-| 40 | index.html:276 | 首次识别需下载模型，进度会显示在页面上。 | The speech model downloads the first time you start. Progress appears here. | |
+| 40 | index.html #input-help | 识别模型在第一次点「开始翻译」时下载，字幕要等它下完。还没下载时，输入框下面会出现「现在下载」，开播前点它先下好。 | The speech model downloads the first time you click Start, and captions wait until it finishes. Until it’s downloaded, Download Now appears below the input field. Click it before you go live. | 2026-10-29 改：以前只说「首次识别需下载」，新装机第一次开播时才下 3.1 GB，直播已经开始了。同一天第二次改：首页输入框下面也有了一颗「现在下载」（#40a），这里改指那一颗 |
+| 40a | index.html #asr-model-hint、app.js renderAsrHint | 语音模型还没下载（约 3.1 GB）/ 语音模型还没下载（约 484 MB）/ 语音模型还没下载　[现在下载] | The speech model isn’t downloaded yet (about 3.1 GB) / The speech model isn’t downloaded yet (about 484 MB) / The speech model isn’t downloaded yet　[Download Now] | 2026-10-29 加（launch-2 A）：自检那一行只有提醒时折叠，新装机开播前看不到「现在下载」。只在自检「语音识别」一行带 download_asr_model 时出现，下好后自己消失；连接中、直播中整个开始面板藏着。下载中这句不变（确实还没下完），按钮变成灰的 **Downloading…**。大小的写法同自检那一行（about 3.1 GB，不知道多大就不写括号）。白卡片、普通灰底按钮，不用蓝色实心（首屏的蓝只给 Start），不用橙色 |
 | 41 | index.html:280 | 主播语言 | Spoken language | 52 → 104 |
 | 42 | index.html:285–299 | 西班牙语 + 英语（默认）/ 西班牙语（只有西语）/ 自动检测 / 英语 / 日语 / 韩语 / 葡萄牙语 / 法语 / 德语 / 俄语 / 阿拉伯语 / 泰语 / 越南语 / 印尼语 / 中文 | Spanish + English (default) / Spanish Only / Detect Automatically / English / Japanese / Korean / Portuguese / French / German / Russian / Arabic / Thai / Vietnamese / Indonesian / Chinese | 这是界面文字，要翻。换主播面板 #switch-source-echo 会回显选中项的文字，自然跟着变 |
 | 43 | index.html:303 †184 | 本场品牌 | Brand | 52 → 36 |
@@ -514,6 +528,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 58 | index.html:391–398 | 自动（优先本地，离线免费）/ 本地 Hy-MT2 1.8B / 本地 Hy-MT2 7B（更准，更吃内存）/ DeepL API / Claude API / OpenAI 兼容 API / Google 免费接口 / 不翻译，只显示原文 | Automatic (local first, free and offline) / Local Hy-MT2 1.8B / Local Hy-MT2 7B (more accurate, uses more memory) / DeepL API / Claude API / OpenAI-Compatible API / Google (free) / Don’t Translate (show original) | |
 | 59 | app.js:2539 NOTES | auto / hymt2 / hymt2-7b / deepl / claude / openai / google / none 的说明 | auto: Uses a local model: fully offline, unlimited, and captions never leave this computer. · hymt2: Local model, offline and free. Good enough for most computers. · hymt2-7b: Local model with more accurate terms. It shares memory with speech recognition and can slow alerts. · deepl: Captions are sent to DeepL. Free usage is what’s shown here; your DeepL plan sets the billing cycle and renewal. · claude: Captions are sent to Anthropic and billed by usage. · openai: Captions are sent to this API’s provider and billed by usage. · google: Captions are sent to Google. Google caps how many requests one IP address can make. · none: Shows the original text without translating. | †index.html:405 也有一份 auto 的说明 |
 | 60 | index.html:401、app.js:2606 | 粘贴 API 密钥 / 已填 {tail}（留空则沿用） | Paste API key / Key ending in {tail} saved (leave blank to keep) | 占位文字 |
+| 60a | index.html #engine-workspace、app.js syncEngineRow | 工作区 ID（选填，wrkspc_ 开头）；悬停说明「只有建密钥时没选工作区的才要填……」 | Workspace ID (optional, starts with wrkspc_); tooltip “Only needed for an API key that isn’t scoped to a workspace. …” | 占位文字，只在选 Claude 时显示（2026-10-29）。不像 `wrkspc_…` 的不发，提示 “A workspace ID starts with wrkspc_ …”（app.js 和 pipeline.py set_engine 同一句）；这把 400 的横幅和自检那一行见术语表「工作区」 |
 | 61 | index.html:402、app.js:2620/2626 | 保存 / 切换中… | Save / Switching… | |
 | 62 | settings-rows.js:30/34/37 | 不翻译 / · 免费额度已用 {pct}%（按近期速度约剩 {h} 小时）/ 已回退 · | No translation / · {pct}% of free quota used (~{h} hr left) / Fallback · | 用短写法，见 §4 R11 |
 | 63 | index.html:422 | 违禁词报警 | Banned-Term Alerts | 70 → 130 |
@@ -597,8 +612,9 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 110 | pipeline.py:667/673/784/828 | 已收到指令，正在连接… / 正在切换到 @B：先停止 @A 的监听… / 正在停止… | Connecting… / Switching to @B: stopping @A, then connecting… / Stopping… | 2026-10-15 起停止完成后不再发「已停止。输入直播间地址可重新开始。」（Stopped. Enter a live link to start again.）：状态是空 detail，横幅收起 |
 | 111 | pipeline.py:2241/2356/2357 | 正在解析直播流地址… | Getting the stream URL… | 2026-10-15 起收到首帧音频后不再发「已连接直播间，开始实时识别（人声降噪已开启）」（Connected. Transcribing live (noise reduction on).）：状态是空 detail，横幅收起，状态胶囊的「直播中」已经说了。演示模式那句「演示模式：内置台词模拟直播字幕（未连接真实直播）」照旧显示，它要提醒这不是真的 |
 | 112 | pipeline.py:2131/2219 | 上一场字幕在下方。 | The previous session’s captions are below. | 2026-10-15 由「直播已结束。可以往下翻看这一场的字幕，或在上方输入新的直播间地址。」缩短；「直播已结束」胶囊已经说了，输入框本来就在上面。「上一场」按 §1.2 写 previous session，跟标题 #52 一致 |
-| 113 | pipeline.py:154–158 | 4003110 整段 | TikTok didn’t provide a stream URL for this live stream (code 4003110). Retried {n} times. TikTok doesn’t say why. Sometimes it works if you click Start again a little later. Sometimes it doesn’t work for the whole stream. {browser advice} To watch now, paste the live link and the .flv URL from your browser together, separated by a space. A .flv URL usually works for about two weeks. |
-| 114 | pipeline.py:1683 | TikTok 暂时没有把这个直播间的流地址给程序，{s} 秒后自动重试（第 {i}/{n} 次）… | TikTok didn’t provide a stream URL for this live stream. Retrying in {s} sec (attempt {i} of {n})… |
+| 113 | pipeline.py browser_only_message | 4003110 整段 | TikTok didn’t provide a stream URL for this live stream (code 4003110). Retried {n} times. TikTok doesn’t say why. Sometimes it works if you click Start again a little later. Sometimes it doesn’t work for the whole stream. {browser advice} To watch now, paste the live link and the .flv URL from your browser together, separated by a space. A .flv URL usually works for about two weeks. You can also open this live stream in your browser to check whether the streamer is live. |
+| 114 | pipeline.py `_resolve_media` | TikTok 暂时没有把这个直播间的流地址给程序，{s} 秒后自动重试（第 {i}/{n} 次）…可以先在浏览器里打开这个直播间，看看主播是不是在播。[查流地址时没有读到 {browser} 里的 TikTok 登录，步骤见顶部那条提示。] | TikTok didn’t provide a stream URL for this live stream. Retrying in {s} sec (attempt {i} of {n})… Meanwhile, you can open this live stream in your browser to check whether the streamer is live. [The stream URL lookup couldn’t read the TikTok sign-in from {browser}. The steps are in the notice at the top.] |
+| 114a | pipeline.py `_resolve_media` | 正在第 {i}/{n} 次查流地址（每次约 {s} 秒）… | Looking up the stream URL, attempt {i} of {n} (about {s} sec each)… |
 | 115 | pipeline.py:2400 | 直播流多次中断且自动重连失败——可能直播已结束，或网络不稳。… | The stream was interrupted several times and couldn’t reconnect. Check that the stream is still live and your network is working, then click Start. |
 | 116 | app.js startStream / connect（ws.onclose，断开超过 20 秒） | 与本地服务断开，正在重连——稍候再点「开始翻译」 / 超过 20 秒没有连上本地服务。如果程序已经关闭，请重新打开：macOS 双击「TikTok Live Translator.app」，Windows 双击「Start.bat」。 | Lost connection to the local service. Reconnecting… Click Start again in a moment. / No connection to the app’s local service for over 20 seconds. If the app has quit, reopen it. On Mac, double-click TikTok Live Translator.app. On Windows, double-click Start.bat. |
 | 117 | app.js trackTranslateHealth | 连续多条字幕没有译出来，字幕先显示原文（语音识别不受影响）。一直这样的话，点「停止」后可以在「设置 > 翻译引擎」里换一个引擎。 | The last several captions couldn’t be translated, so captions show the original text. Speech recognition isn’t affected. If this continues, you can choose another engine in Settings > Translation Engine after you click Stop. |

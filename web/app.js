@@ -62,6 +62,9 @@
   var brandEmptyHint = document.getElementById("brand-empty-hint");
   var startBtn = document.getElementById("start-btn");
   var roomInputError = document.getElementById("room-input-error");
+  var asrHint = document.getElementById("asr-model-hint");          // 语音模型还没下载时的一行（renderAsrHint）
+  var asrHintText = document.getElementById("asr-model-hint-text");
+  var asrHintBtn = document.getElementById("asr-model-hint-btn");
   var recentRooms = document.getElementById("recent-rooms");
   var recentList = document.getElementById("recent-list");
   var recentClear = document.getElementById("recent-clear");
@@ -77,6 +80,8 @@
   var commentJump = document.getElementById("comment-jump");
   var engineSelect = document.getElementById("engine-select");
   var engineKey = document.getElementById("engine-key");
+  var engineWorkspaceRow = document.getElementById("engine-workspace-row");
+  var engineWorkspace = document.getElementById("engine-workspace");
   var engineSave = document.getElementById("engine-save");
   var engineActive = document.getElementById("engine-active");
   var engineNote = document.getElementById("engine-note");
@@ -89,6 +94,10 @@
   var connectHintEl = document.getElementById("connect-hint");
   var connectHintText = document.getElementById("connect-hint-text");
   var targetSel = document.getElementById("target-lang");
+  // 「字幕译成」下面的就地提示（index.html #target-hint，见 showTargetHint）
+  var targetHint = document.getElementById("target-hint");
+  var targetHintText = document.getElementById("target-hint-text");
+  var targetHintSwitch = document.getElementById("target-hint-switch");
   var fontSlider = document.getElementById("font-size");
   var clearBtn = document.getElementById("clear-btn");
   var prevCapsTitle = document.getElementById("prev-caps-title");
@@ -215,6 +224,9 @@
   var langSummaryEl = document.getElementById("lang-summary");
   var uiLangSelect = document.getElementById("ui-lang-select");
   var uiLangSystemOpt = document.getElementById("ui-lang-system");
+  // 待机首页标题区右上角的「中文 / English」两段切换（用户 2026-10-29，见 renderLangQuick）
+  var langQuick = document.getElementById("lang-quick");
+  var langQuickBtns = { zh: document.getElementById("lang-quick-zh"), en: document.getElementById("lang-quick-en") };
   // 字幕记录行：和违禁词报警、弹幕留意一样默认收起、永不自动展开（CLAUDE.md 第六条）
   var transcriptHead = document.getElementById("transcript-head");
   var transcriptBody = document.getElementById("transcript-body");
@@ -574,7 +586,67 @@
   // 目标语言以服务端为准（跟随 --target 启动参数），UI 切换即时生效但不做本地持久化
   targetSel.addEventListener("change", function () {
     send({ type: "set_target", value: targetSel.value });
+    // 选的是另一种界面语言（英文界面选了中文、中文界面选了 English）：多半是把它当成了界面语言，就地说一声
+    showTargetHint(captionsLangHint(UI_LANG, targetSel.value));
   });
+
+  // ---- 「字幕译成」下面的就地提示（2026-10-29，live-ui.js captionsLangHint） ----
+  // 正文是下拉 tooltip 的同一句，外加一颗按钮，字是那种界面语言的自称（settings-rows.js langName）。
+  // 每页只弹一次；TARGET_HINT_MS 后自己收起，不一直盖着字幕区顶上。指针移进来、或焦点进到里面，就不再按时收起
+  // （要点按钮的人不会被它躲开），点外面、Esc 照旧收（顶栏浮层那张登记表，见下面 registerPopover）。
+  // 界面语言这一行不存在时（闸关着、又没有 --ui-lang 一次性覆盖）不弹：那句话指向的地方不存在。
+  // 按钮在待机、连接中、直播中都给（用户 2026-10-29 定，lang-4 选 A）：连接中、直播中设置分组整块藏着，
+  // 这颗按钮是这时切界面语言唯一的入口，顶栏不另加按钮。切换只让页面重载一次，监听不停（app/pipeline.py
+  // _set_ui_lang 的注释）。只有界面语言被启动参数固定时不给，只说那句话
+  var TARGET_HINT_MS = 8000;
+  var targetHintShown = false;
+  var targetHintTimer = null;
+  var targetHintLang = null;     // 按钮要切到的界面语言（zh / en）；没弹过时为 null
+  function targetHintCanSwitch() { return !!targetHintLang && !langLocked; }
+  function syncTargetHintSwitch() {
+    if (targetHintSwitch) targetHintSwitch.classList.toggle("hidden", !targetHintCanSwitch());
+  }
+  function stopTargetHintTimer() {
+    if (targetHintTimer) clearTimeout(targetHintTimer);
+    targetHintTimer = null;
+  }
+  function closeTargetHint() {
+    stopTargetHintTimer();
+    hidePopover(targetHint);
+  }
+  function showTargetHint(lang) {
+    if (!targetHint || !targetHintText || !targetHintSwitch) return;
+    if (targetHintShown || !lang || !langAvailable) return;
+    targetHintShown = true;
+    targetHintLang = lang;
+    targetHintText.textContent = L("字幕译成这种语言。界面语言在「设置 > 界面语言」里改",
+      "Captions are translated into this language. To change the app language, go to Settings > App Language.");
+    // 按钮的名字就是语言自称本身（同首页的两段切换 #lang-quick），读屏照按钮的 lang 用那种语言的声音念；
+    // 不另写 aria-label——它也会跟着 lang 被念成另一种语言的声音，英文页上还会多一处中文。提示那句话
+    // 由 index.html 上的 aria-describedby 接上
+    targetHintSwitch.textContent = langName(lang);
+    targetHintSwitch.setAttribute("lang", lang === "en" ? "en" : "zh-CN");
+    syncTargetHintSwitch();
+    // 不传 trigger：下拉不是开合这个浮层的按钮，不给它挂 aria-expanded（位置仍按登记的下拉算）
+    showPopover(targetHint);
+    targetHintTimer = setTimeout(closeTargetHint, TARGET_HINT_MS);
+  }
+  if (targetHint) {
+    targetHint.addEventListener("pointerenter", stopTargetHintTimer);
+    targetHint.addEventListener("focusin", stopTargetHintTimer);
+  }
+  if (targetHintSwitch) {
+    // 和设置行的下拉发同一条 set_ui_lang：服务端存设置、广播新语言，本页见到不一样就重载（reloadForLang）
+    targetHintSwitch.addEventListener("click", function () {
+      if (!targetHintCanSwitch()) return;
+      var value = targetHintLang;
+      closeTargetHint();
+      if (send({ type: "set_ui_lang", value: value })) return;
+      setStatus({ state: "offline",
+                  detail: L("与本地服务断开，正在重连——稍候再试。",
+                            "Lost connection to the local service. Reconnecting… Try again in a moment.") });
+    });
+  }
 
   // 「字幕译成」下拉显示服务端说的当前目标（hello 和 config 广播）。下拉只列四种（index.html）；
   // 当前目标不在里面时（settings.json 里存着以前选的日语、--target ja 启动）照 targetLangExtra
@@ -1526,6 +1598,7 @@
     // 和本地服务断开期间「打开闪购助手」点了也发不出去：先禁用，重连后的 hello 再带回真实状态
     if (flashOpenBtn) flashOpenBtn.disabled = state === "offline";
     startBtn.disabled = state === "connecting";
+    syncAsrFetchBtn();      // 自检「语音识别」一行的「现在下载」：连接中、直播中置灰
     streamActive = active;
     updateFloatBtn();       // 浮窗按钮跟换主播同一条显示规则
     updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
@@ -3230,10 +3303,112 @@
       delete incidents[msg.id];
     } else {
       incidents[msg.id] = { level: msg.level || "warn", text: msg.text || "",
-                            since: msg.since || msg.ts || 0, ts: msg.ts };
+                            since: msg.since || msg.ts || 0, ts: msg.ts, recheck: !!msg.recheck,
+                            fda: msg.fda || null };
     }
     drawIncidents();
   }
+
+  // 「我加好了，再查一次」（app/pipeline.py _recheck_browser_login）：「没有读到 TikTok 登录」那条在系统拒绝读取时带
+  // recheck，自检「浏览器登录态」那一行带「完全磁盘访问权限」那几步时也带（app/selfcheck.py _browser_login_row）。
+  // 2026-10-29 新 Mac 上，中控照着做完以后，点「开始翻译」之前没有任何地方告诉他成没成。点了让后端当场重看一次，
+  // 结果走 notice；页面上有这个按钮时，从系统设置切回窗口（先离开、再回来）也自动发一次，两次之间至少隔
+  // RECHECK_GAP_MS。自动发的带 auto：结果和上一次一样，后端就不再发 notice
+  var RECHECK_GAP_MS = 5000;
+  var lastRecheckAt = -Infinity;
+  var scRecheckShown = false;          // 自检那一行此刻带不带这个按钮（renderSelfcheck 记下）
+  var leftWithRecheck = false;         // 按钮在页面上时离开过窗口：回来时自动重查一次
+
+  function sendRecheck(auto) {
+    var msg = { type: "recheck_browser_login" };
+    if (auto) msg.auto = true;
+    if (!send(msg)) return false;
+    lastRecheckAt = Date.now();
+    return true;
+  }
+
+  function recheckButton(cls) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = cls;
+    btn.textContent = L("我加好了，再查一次", "Check Again");
+    btn.addEventListener("click", function () { sendRecheck(false); });
+    return btn;
+  }
+
+  function recheckOnPage() {
+    for (var k in incidents) if (incidents[k].recheck) return true;
+    return scRecheckShown;
+  }
+
+  function leaveWindow() {
+    if (recheckOnPage()) leftWithRecheck = true;
+  }
+
+  function backToWindow() {
+    if (!leftWithRecheck || !recheckOnPage()) return;
+    if (Date.now() - lastRecheckAt < RECHECK_GAP_MS) return;
+    if (sendRecheck(true)) leftWithRecheck = false;
+  }
+
+  // 「完全磁盘访问权限」那几步旁边的按钮（app/browser_login.py fda_button_lines、fda_open_argvs；app/pipeline.py
+  // _open_fda）。2026-10-29 用户照着黄条的文字做不下来，是我们替他打开了那一页、在访达里选中了解释器，他拖进去才
+  // 成功。「没有读到 TikTok 登录」那条和自检「浏览器登录态」那一行带 fda（{settings|python|terminal: 那一步的那一行
+  // 字}）时，按钮接在那一行后面：哪一行只按 fda 给的字整行比对（同 pathOfLine），不从文字里猜；比不上的接在最后，
+  // 不丢。fda 只在 macOS 上带，「终端」那一个只在从终端启动时带；表外的键不画。点了只发类型，不带任何路径或参数：
+  // argv 在后端写死。按钮名和后端第 1、2 步里叫人去点的名字是同一套（browser_login.FDA_BUTTON_LABELS）
+  var FDA_BUTTONS = [
+    { key: "settings", type: "open_fda_settings" },
+    { key: "python", type: "reveal_python" },
+    { key: "terminal", type: "reveal_terminal" },
+  ];
+
+  function fdaLabel(key) {
+    if (key === "settings") return L("打开完全磁盘访问设置", "Open Full Disk Access Settings");
+    if (key === "python") return L("在访达里选中 Python", "Show Python in Finder");
+    return L("在访达里选中终端", "Show Terminal in Finder");
+  }
+
+  function fdaButton(item, cls) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = cls;
+    btn.textContent = fdaLabel(item.key);
+    btn.addEventListener("click", function () { send({ type: item.type }); });
+    return btn;
+  }
+
+  // fda 里认得的那几项（按 FDA_BUTTONS 的顺序）：[{key, type, line}]。fda 不是对象、或一项都不认得时是空的
+  function fdaItems(fda) {
+    if (!fda || typeof fda !== "object") return [];
+    return FDA_BUTTONS.filter(function (b) { return typeof fda[b.key] === "string" && fda[b.key].trim(); })
+                      .map(function (b) { return { key: b.key, type: b.type, line: fda[b.key].trim() }; });
+  }
+
+  // 把几行字一行一行画进 el（el 是 pre-line：行之间是换行），fda 给了的那一行后面接上它的按钮。lead 为真时第一行
+  // 前面也换行（折起来的那几行接在第一行后面）。没有 fda 时和整段 textContent 一字不差
+  function drawFdaLines(el, lines, fda, cls, lead) {
+    var items = fdaItems(fda);
+    var placed = {};
+    lines.forEach(function (line, i) {
+      el.appendChild(document.createTextNode((i > 0 || lead ? "\n" : "") + line));
+      items.forEach(function (item) {
+        if (placed[item.key] || item.line !== line.trim()) return;
+        placed[item.key] = true;
+        el.appendChild(fdaButton(item, cls));
+      });
+    });
+    items.forEach(function (item) {
+      if (!placed[item.key]) el.appendChild(fdaButton(item, cls));
+    });
+  }
+
+  window.addEventListener("blur", leaveWindow);
+  window.addEventListener("focus", backToWindow);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") leaveWindow();
+    else backToWindow();
+  });
 
   // 带上看到的那一条的 ts：这期间又跳了一次的话服务端不收，新的那次中控还没看到。
   // 发出去了才先在本页收起（等服务端的 clear 回来也是同样的结果）；连接断着时发不出去，
@@ -3248,23 +3423,28 @@
 
   // 超过 3 行的持续提示默认只露第一行，行尾跟「显示全部步骤」，和状态横幅同一个做法（U10，BANNER_FOLD_LINES）。
   // 眼下只有「没有读到 TikTok 登录」带完全磁盘访问权限那几步的那种（app/browser_login.py no_login_notice，第一行是
-  // 看到了什么、影响哪类直播间、在 Safari 里登录）：它读到登录之前一直挂在顶部、直播中也在，全展开 1000 宽下
+  // 登录优先那一步看到了什么、授权那几步的头一句）：它读到登录之前一直挂在顶部、直播中也在，全展开 1000 宽下
   // 八九行（审查第 1 轮）。持续提示每变一条整排重画：展开与否按 id 记、连同那段文字，重画时保留，文字变了重新
   // 折起来。按钮就地切换，不重画（键盘焦点留在按钮上）
   var incidentOpen = Object.create(null);   // id → 展开时的那段文字
 
-  function foldIncident(span, id, text) {
+  // fda：「完全磁盘访问权限」那几步旁边的按钮跟在哪几行后面（drawFdaLines）
+  function foldIncident(span, id, text, fda) {
     var lines = String(text).split("\n").map(function (s) { return s.trim(); })
                             .filter(function (s) { return s; });
     if (!span || lines.length <= BANNER_FOLD_LINES) {
       delete incidentOpen[id];
+      if (span && fdaItems(fda).length) {
+        span.textContent = "";
+        drawFdaLines(span, lines, fda, "incident-fda", false);
+      }
       return;
     }
     if (incidentOpen[id] !== undefined && incidentOpen[id] !== text) delete incidentOpen[id];
     span.textContent = lines[0];
     var rest = document.createElement("span");
     rest.className = "incident-rest";
-    rest.textContent = "\n" + lines.slice(1).join("\n");      // .incident > span 是 pre-line：照着换行
+    drawFdaLines(rest, lines.slice(1), fda, "incident-fda", true);   // .incident > span 是 pre-line：照着换行
     var more = document.createElement("button");
     more.type = "button";
     more.className = "banner-more";
@@ -3298,7 +3478,12 @@
       // 当数据，不当 HTML；开头自带的 🔴⚠️ 换成按级别画的图标
       var text = stripStatusEmoji(incidents[k].text);
       setIconText(row, barIconFor(level), text);
-      foldIncident(row.lastChild, k, text);
+      foldIncident(row.lastChild, k, text, incidents[k].fda);
+      if (incidents[k].recheck) {
+        // 接在第一行的字（和「显示全部步骤」）后面：折着时也看得见
+        var span = row.lastChild;
+        span.insertBefore(recheckButton("incident-recheck"), span.querySelector(".incident-rest"));
+      }
       if (DISMISSABLE_INCIDENTS.indexOf(k) !== -1) {
         row.classList.add("dismissible");
         var closeBtn = document.createElement("button");
@@ -4009,6 +4194,8 @@
   // 同看面板走 closeSharePanel——只收起，不碰同看开关，跟卡片里的 × 同一个函数（pm.md #3）
   registerPopover(switchPanel, switchBtn, closeSwitchPanel);
   registerPopover(sharePanel, shareBtn, closeSharePanel);
+  // 「字幕译成」下面的就地提示：位置按下拉算，Esc 之后焦点回到下拉
+  registerPopover(targetHint, targetSel, closeTargetHint);
   // Esc 关闭：只在有浮层确实打开时处理，不吞掉页面别处的 Esc（没有别处在用）。
   // 关掉开着的那一个后焦点回到它的触发按钮，键盘用户不会掉到页面开头
   document.addEventListener("keydown", function (e) {
@@ -4286,8 +4473,76 @@
   var scLastSig = null;   // 结论没变就别动展开状态
   var SC_LEVEL_SR_TEXT = { warn: L("（提醒）", " (warning)"), fail: L("（未通过）", " (failed)") };
 
+  // 自检「语音识别」一行上的「现在下载」（app/selfcheck.py ACTION_DOWNLOAD_ASR，后端 app/pipeline_asr_fetch.py）：
+  // 待机时提前下载识别模型，不用等第一次开播。连接中、直播中、和本地服务断开、正在下载时置灰——服务端在
+  // 这些时候也不下。下完服务端重发这一行：模型下全了这一行就没有 action，按钮跟着没了
+  var asrFetchBtn = null;
+  var asrFetchBusy = false;
+  var ASR_FETCH_OFF_STATES = { connecting: true, live: true, offline: true };
+
+  function asrFetchLabel(sizeMb) {
+    var mb = Number(sizeMb) || 0;
+    if (!mb) return L("现在下载", "Download Now");
+    if (mb < 1000) return L("现在下载（约 {mb} MB）", "Download Now (about {mb} MB)").replace("{mb}", String(mb));
+    return L("现在下载（约 {gb} GB）", "Download Now (about {gb} GB)").replace("{gb}", (mb / 1000).toFixed(1));
+  }
+
+  // 首页那一行的大小：「约 3.1 GB」「约 484 MB」；不知道多大是空串（同 app/selfcheck.py _size_text）
+  function asrSizeText(sizeMb) {
+    var mb = Number(sizeMb) || 0;
+    if (!mb) return "";
+    if (mb < 1000) return L("约 {mb} MB", "about {mb} MB").replace("{mb}", String(mb));
+    return L("约 {gb} GB", "about {gb} GB").replace("{gb}", (mb / 1000).toFixed(1));
+  }
+
+  // 两颗按钮（自检里那颗、首页那颗）同一个置灰规则；首页那颗的字也在这里跟着 asrFetchBusy 变
+  function syncAsrFetchBtn() {
+    var off = asrFetchBusy || ASR_FETCH_OFF_STATES[statusState] === true;
+    if (asrFetchBtn) asrFetchBtn.disabled = off;
+    if (asrHintBtn) {
+      asrHintBtn.disabled = off;
+      asrHintBtn.textContent = asrFetchBusy ? L("正在下载…", "Downloading…") : L("现在下载", "Download Now");
+    }
+  }
+
+  // 两颗按钮点的都是这一下：发出去了才把两颗一起变成灰的「正在下载…」，只有服务端重发那一行才放回来
+  function startAsrFetch() {
+    if (!send({ type: "download_asr_model" })) return;    // 断开了：什么都没发出去，按钮照旧
+    asrFetchBusy = true;
+    if (asrFetchBtn) asrFetchBtn.textContent = L("正在下载…", "Downloading…");
+    syncAsrFetchBtn();
+  }
+
+  function asrFetchButton(c) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn small sc-action";
+    asrFetchBusy = !!c.busy;
+    btn.textContent = asrFetchBusy ? L("正在下载…", "Downloading…") : asrFetchLabel(c.size_mb);
+    btn.addEventListener("click", startAsrFetch);
+    return btn;
+  }
+
+  // 首页输入框下面那一行（#asr-model-hint，2026-10-29 用户选的 launch-2 A）：自检那一行收在「设置 > 启动自检」里，
+  // 只有提醒时整行折叠成「通过 · N 项提醒」，新装机的中控开播前看不到它。这一行跟自检那一行看同一个 action：
+  // 带着才出现（row 是那一行，没有就是 null），下好后服务端重发那一行、没有 action 了，这一行自己消失。
+  // 下载中这句话不变（确实还没下完），只有按钮变成灰的「正在下载…」；进度在顶部横幅里（_provision_note）。
+  // 连接中、直播中整个开始面板藏着（setStatus），这里不另外判断
+  function renderAsrHint(row) {
+    if (!asrHint) return;
+    asrHint.classList.toggle("hidden", !row);
+    if (!row) return;
+    var size = asrSizeText(row.size_mb);
+    asrHintText.textContent = size
+      ? L("语音模型还没下载（{size}）", "The speech model isn’t downloaded yet ({size})").replace("{size}", size)
+      : L("语音模型还没下载", "The speech model isn’t downloaded yet");
+  }
+
+  if (asrHintBtn) asrHintBtn.addEventListener("click", startAsrFetch);
+
   function renderSelfcheck(msg) {
     if (!scBox || !msg.checks) return;
+    scRecheckShown = msg.checks.some(function (c) { return !!c.recheck; });
     var sum = msg.summary || {};
     scBox.classList.remove("hidden");
     scHead.classList.toggle("has-fail", sum.fail > 0);
@@ -4299,6 +4554,9 @@
     setSelfcheckIcon(scSum.icon);
     scSummary.title = scSummary.textContent;
     scList.innerHTML = "";
+    asrFetchBtn = null;
+    asrFetchBusy = false;
+    var asrRow = null;
     msg.checks.forEach(function (c) {
       var li = document.createElement("li");
       li.className = "sc-item " + c.level;
@@ -4320,17 +4578,33 @@
       if (c.fix) {
         var fix = document.createElement("span");
         fix.className = "sc-fix";
-        fix.textContent = c.fix;   // 不再拼「→」：这不是链接，没法点（designer.md #1）
+        if (fdaItems(c.fda).length) {
+          // 「完全磁盘访问权限」那几步旁边的按钮，接在 fda 给的那几行后面（drawFdaLines）
+          drawFdaLines(fix, String(c.fix).split("\n"), c.fda, "btn small sc-fda", false);
+        } else {
+          fix.textContent = c.fix;   // 不再拼「→」：这不是链接，没法点（designer.md #1）
+        }
+        if (c.recheck) fix.appendChild(recheckButton("btn small sc-recheck"));   // 「我加好了，再查一次」，在那几步下面
         detail.appendChild(fix);
+      }
+      if (c.action === "download_asr_model") {
+        asrRow = c;
+        asrFetchBtn = asrFetchButton(c);
+        detail.appendChild(asrFetchBtn);
       }
       li.appendChild(name);
       li.appendChild(detail);
       scList.appendChild(li);
     });
+    renderAsrHint(asrRow);
+    syncAsrFetchBtn();
     // 只有结论真的变了才自动展开/收起。重连会重放一次 hello，
     // 那时若无条件重置，正在看明细的人会被收起来。自检这一行的规则是「签名
     // 一变就无条件同步」——从「有失败」变回「全绿」也要跟着收起，所以直接用
     // r.open，不像引擎回退提示那样还要额外判断（见 nextAutoOpen 的注释）
+    //
+    // 「语音识别」一行带着「现在下载」也只是提醒，不展开：首页输入框下面那一行在说（renderAsrHint）。
+    // 2026-10-29 用户在 launch-2 的三种做法里选的是首页这一行（A），不是让这一行自己展开（B）
     var r = nextAutoOpen(scLastSig, scSum.sig, sum.fail > 0);
     scLastSig = r.sig;
     if (r.changed) setSelfcheckOpen(r.open);
@@ -4568,6 +4842,9 @@
     none: L("只显示识别原文，不翻译。", "Shows the original text without translating.")
   };
   var engineKeys = {};
+  var engineWorkspaceId = "";   // 在用的 Claude 工作区 ID（不是密钥，服务端照原样给；没填是空串）
+  // 工作区 ID 的样子（app/translator.py WORKSPACE_ID_RE）：不像就不发，免得刚粘贴的密钥跟着白填
+  var WORKSPACE_ID_RE = /^wrkspc_[A-Za-z0-9_-]+$/;
   var engineNoteSig = null;   // 上一次的回退提示；变了才自动展开，重连回放不反复弹开
 
   // 引擎被回退时摘要前面加的小三角（跟 .sc-icon 同一套线性画法，颜色固定橙——
@@ -4582,6 +4859,7 @@
   function renderEngine(info) {
     if (!engineSelect) return;
     engineKeys = info.keys || {};
+    engineWorkspaceId = typeof info.workspace_id === "string" ? info.workspace_id : "";
     engineSelect.value = info.engine || "auto";
     commentRedoEngine = info.active || "";
     syncAllCommentRedo();     // 字幕引擎换了：已经画出来的「重译」按钮跟着变灰或可点
@@ -4633,6 +4911,10 @@
       engineKey.placeholder = have ? L("已填 " + have + "（留空则沿用）", "Saved key " + have + " (leave blank to keep)")
                                    : L("粘贴 API 密钥", "Paste API key");
     }
+    // 工作区 ID 只有 Claude 要（不绑工作区的密钥）：选别的引擎时收起，框里回到在用的那个
+    var claude = engineSelect.value === "claude";
+    if (engineWorkspaceRow) engineWorkspaceRow.classList.toggle("hidden", !claude);
+    if (engineWorkspace) engineWorkspace.value = engineWorkspaceId;
     // 字幕会发到外部服务的几档：前面加三角图标（以前是 ⚠️ 前缀），颜色仍由 .warn 给
     var sendsOut = engineSelect.value in KEY_ENV || engineSelect.value === "google";
     if (sendsOut) setIconText(engineNote, "warn", NOTES[engineSelect.value] || "");
@@ -4643,10 +4925,24 @@
   if (engineSelect) {
     engineSelect.addEventListener("change", syncEngineRow);
     engineSave.addEventListener("click", function () {
+      var claude = engineSelect.value === "claude";
+      var workspace = claude && engineWorkspace ? engineWorkspace.value.trim() : null;
+      if (workspace && !WORKSPACE_ID_RE.test(workspace)) {
+        // 和服务端那句同一句（app/pipeline.py set_engine）：服务端也会拦，这里先拦是为了不清掉密钥框
+        setIconText(engineNote, "warn", L("工作区 ID 是 wrkspc_ 开头的一串字母和数字（Claude Console 的 Workspaces 页面上有），" +
+                                          "这次没有保存，请检查后再点「保存」",
+                                          "A workspace ID starts with wrkspc_ followed by letters and numbers. It’s listed on " +
+                                          "the Workspaces page in the Claude Console. Nothing was saved. Check it and click " +
+                                          "Save again."));
+        engineNote.classList.add("warn");
+        return;
+      }
       engineSave.disabled = true;
       engineSave.textContent = L("切换中…", "Switching…");
-      send({ type: "set_engine", engine: engineSelect.value,
-             api_key: engineKey.value || null });
+      var msg = { type: "set_engine", engine: engineSelect.value,
+                  api_key: engineKey.value || null };
+      if (claude) msg.workspace_id = workspace;
+      send(msg);
       engineKey.value = "";
       setTimeout(function () {
         engineSave.disabled = false;
@@ -4679,10 +4975,46 @@
   // 语言名、摘要、要不要重载都由 settings-rows.js 的纯函数算，这里只管 DOM 和存储
   var LANG_RELOAD_KEY = "tlt.langReload";
   var langSetting = null;   // 服务端此刻存的选择（system / zh / en）：发送失败时下拉退回它
+  var langAvailable = false;   // 设置里有没有界面语言这一行（「字幕译成」的就地提示看它）
+  var langLocked = false;      // 界面语言被 --ui-lang 固定：提示里不给切换按钮
+
+  // 首页两段切换：显隐、按下态、置灰都由 settings-rows.js langQuickState 算。按下态只跟服务端说的
+  // 语言走：点了另一颗不先改按下态，等广播新语言、页面重载（发送失败时也就不用退回）
+  var langQuickNow = null;     // langQuickState(config)；不出现时为 null
+  function renderLangQuick(cfg) {
+    if (!langQuick) return;
+    langQuickNow = langQuickState(cfg);
+    langQuick.classList.toggle("hidden", !langQuickNow);
+    if (!langQuickNow) return;
+    ["zh", "en"].forEach(function (code) {
+      var btn = langQuickBtns[code];
+      if (!btn) return;
+      btn.setAttribute("aria-pressed", langQuickNow.pressed === code ? "true" : "false");
+      btn.disabled = langQuickNow.locked;
+    });
+    if (langQuickNow.locked) langQuick.title = L("由启动参数固定", "Set by a launch option");
+    else langQuick.removeAttribute("title");
+  }
+  ["zh", "en"].forEach(function (code) {
+    var btn = langQuickBtns[code];
+    if (!btn) return;
+    // 和设置行的下拉发同一条 set_ui_lang：服务端存设置、广播新语言，本页见到不一样就重载（reloadForLang）
+    btn.addEventListener("click", function () {
+      var value = langQuickSend(langQuickNow, code);
+      if (!value) return;
+      if (send({ type: "set_ui_lang", value: value })) return;
+      setStatus({ state: "offline",
+                  detail: L("与本地服务断开，正在重连——稍候再试。",
+                            "Lost connection to the local service. Reconnecting… Try again in a moment.") });
+    });
+  });
 
   function renderLang(cfg) {
+    if (cfg) renderLangQuick(cfg);
     if (!langCard || !cfg) return;
     var available = cfg.ui_lang_available === true;
+    langAvailable = available;
+    langLocked = available && cfg.ui_lang_locked === true;
     langCard.classList.toggle("hidden", !available);
     if (!available) return;
     langSetting = cfg.ui_lang_setting;

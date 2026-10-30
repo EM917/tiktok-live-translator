@@ -27,7 +27,7 @@ import time
 from collections import OrderedDict, deque
 
 from .i18n import L
-from .translator import engine_label, model_label
+from .translator import engine_label, model_label, said_for_ui
 
 ORIGINAL_KEEP = 200            # 服务端留多少条弹幕的原文，供「重译」按 id 取回
 PER_MINUTE = 20                # 全局每分钟最多几次弹幕重译
@@ -192,10 +192,11 @@ def failure_text(strong, error_before, outcome, discarded, had=True):
                  "Couldn’t retranslate this comment: {} returned HTTP {}. Comment retranslation "
                  "requests are paused for {} sec").format(engine, error[0], int(round(paused)))
     elif error and error[0] is not None and error is not error_before and error[1]:
-        # 400/402 带着接口自己的说明（引擎只在这两种回应里留原话）：照抄，不替它解释
+        # 400/402 带着接口自己的说明（引擎只在这两种回应里留原话）：照抄，不替它解释（「密钥没绑工作区」
+        # 换成成对的一句，said_for_ui）
         head = L("弹幕重译没有成功：{} 返回 HTTP {}（{}）",
                  "Couldn’t retranslate this comment: {} returned HTTP {} ({})").format(
-            engine, error[0], error[1].rstrip(" .。"))  # i18n: data（接口原话，去掉末尾句号）
+            engine, error[0], said_for_ui(strong, error[1]))
     elif error and error[0] is not None and error is not error_before:
         head = L("弹幕重译没有成功：{} 返回 HTTP {}",
                  "Couldn’t retranslate this comment: {} returned HTTP {}").format(engine, error[0])

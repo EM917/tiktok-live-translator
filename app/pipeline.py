@@ -20,7 +20,8 @@ from inspect import isawaitable
 from pathlib import Path
 
 from . import asr_risk, i18n
-from .asr import DEFAULT_TEMPERATURE
+from .asr import DEFAULT_TEMPERATURE, MODEL_SIZES_MB
+from .browser_login import FDA_OPEN_TYPES
 from .i18n import LN, L, of
 from .comment_levels import snapshot as level_snapshot
 from .comment_source import CommentSource
@@ -107,10 +108,6 @@ def _open_directory_default(path):
     else:
         subprocess.Popen(["xdg-open", str(path)])
 
-# whisper 各模型的大致下载体积（MB），用来在 UI 上显示首次下载进度
-MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
-                  "large-v3": 3100, "large-v3-turbo": 1620}
-
 DENOISE_MODEL = Path(__file__).resolve().parent.parent / "models" / "bd.rnnn"
 DENOISE_MIN_BYTES = 100_000   # 完整模型约 300 KB；明显小于此值 = 下载被截断
 
@@ -194,14 +191,15 @@ def _accepts_urgent(stop):
         return False
 
 
-def browser_only_message(retries, login=None):
-    """解析以 kind=browser_only 收场时给中控的话。
+def browser_only_message(retries, login=None, first=None):
+    """解析以 kind=browser_only 收场时给中控的话。first 是登录优先那一步要读的浏览器
+    （resolver._login_first_browsers；见 browser_login.fda_needed），不知道是 None。
 
     前半句是一直以来的事实（TikTok 不给、原因它不说明）；中间按这次借浏览器登录时的
     观察（ResolveError.login，{浏览器: 代码}）接上对应的一步——系统拒绝读取就给
     「完全磁盘访问权限」的步骤，没登录就说去登录，借到了登录仍然不给就照实说；
     最后是粘 .flv 地址的办法。只写观察和能照做的事。"""
-    from .browser_login import browser_only_advice
+    from .browser_login import lookup_advice
 
     # 中英文都只写这次真看到的：接口不给、重试了几次、TikTok 不说原因。不写「不是 X 问题」这种
     # 否定句，否定句里也不许出现原因标签；也不写「同一时刻其它直播间正常」——那是 09-05 一次
@@ -220,26 +218,30 @@ def browser_only_message(retries, login=None):
                "Retried {} times. TikTok doesn’t say why. Sometimes it works if you click "
                "Start again a little later. Sometimes it doesn’t work for the whole stream."
                ).format(retries)
-            + browser_only_advice(login)
+            + lookup_advice(login, first)
             + L("想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来"
                 "（中间空格隔开），一次约两周有效。",
                 " To watch now, paste the live link and the .flv URL from your browser "
                 "together, separated by a space. A .flv URL usually works for about two "
-                "weeks."))
+                "weeks.")
+            # 2026-10-29：三次一共 156 秒，收场的话里没有一件中控现在就能自己核对的事。放在最后：第一行（4003110
+            # 那句）不能变长，横幅折叠时只露它
+            + L("也可以在浏览器里打开这个直播间，看看主播是不是在播。",
+                " You can also open this live stream in your browser to check whether the streamer is live."))
 
 
 def _fda_paths(exc):
     """解析失败的话里带着「完全磁盘访问权限」那一步时，那一步要加的路径（browser_login.fda_targets，和文字里
-    列的是同一份）；不带就是空列表。带不带照 browser_login.browser_only_advice 的判断：kind=browser_only、借登录
-    时有浏览器被系统拒绝读取（BLOCKED）、又没有哪个浏览器借到了登录（借到了，那段话说的是「借了也不给」）。
-    别的 kind 的话里没有这一步，带了路径页面上就是几行没头没尾的复制框。"""
-    from .browser_login import BLOCKED, NOT_READ, OK, fda_targets
+    列的是同一份）；不带就是空列表。带不带和那段话用同一个判断（browser_login.fda_needed）：kind=browser_only、
+    借登录时有浏览器被系统拒绝读取（BLOCKED），而且没借到任何登录、或者被拒的正是登录优先那一步要读的浏览器
+    （exc.login_first，_resolve_media 收场时记上；2026-10-29 Safari 被拒、Chrome 借到了，以前这里一看到借到了
+    就不给）。别的 kind 的话里没有这一步，带了路径页面上就是几行没头没尾的复制框。"""
+    from .browser_login import fda_needed, fda_targets
 
     login = getattr(exc, "login", None)
     if getattr(exc, "kind", None) != "browser_only" or not isinstance(login, dict):
         return []
-    codes = [c for c in login.values() if c != NOT_READ]
-    if BLOCKED not in codes or OK in codes:
+    if not fda_needed(login, getattr(exc, "login_first", None)):
         return []
     try:
         return list(fda_targets())
@@ -422,6 +424,7 @@ from .viewer_share import (  # noqa: E402
     VIEWER_STOP_TIMEOUT_SEC,        # noqa: F401
     VIEWER_RETRANSLATE_QUEUE_MAX,   # noqa: F401
 )
+from .pipeline_asr_fetch import AsrPrefetchMixin  # noqa: E402
 from .pipeline_disk import DiskSpaceMixin  # noqa: E402
 from .pipeline_engine import EngineProvisionMixin  # noqa: E402
 from .pipeline_evidence import AsrEvidenceMixin  # noqa: E402
@@ -433,7 +436,8 @@ from .pipeline_transcript import TranscriptMixin  # noqa: E402
 
 
 class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGuardMixin,
-               TranscriptMixin, FloatWindowMixin, FlashSaleMixin, AsrEvidenceMixin, StreamWatchMixin):
+               TranscriptMixin, FloatWindowMixin, FlashSaleMixin, AsrEvidenceMixin, StreamWatchMixin,
+               AsrPrefetchMixin):
     def __init__(self, args, server):
         self.args = args
         self.server = server
@@ -664,7 +668,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             ids = msg.get("ids")
             return self._disk_delete([str(x) for x in ids] if isinstance(ids, list) else [])
         elif mtype == "set_engine":
-            return self.set_engine(msg.get("engine"), msg.get("api_key"))
+            return self.set_engine(msg.get("engine"), msg.get("api_key"), msg.get("workspace_id"))
         elif mtype == "retranslate":
             # 字幕重译放后台跑（同下面的 retranslate_comment、apply_update）。以前直接把 retranslate() 的协程交回
             # 去，server 在这个页面的消息循环里等强模型：本地强模型最长 60 秒，这期间点的「停止」「换主播」都排在
@@ -690,6 +694,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         elif mtype == "check_update":
             if getattr(self, "updater", None) is not None:
                 return self.updater.check_and_notify(delay=0, manual=True)
+        elif mtype == "recheck_browser_login":
+            # 「我加好了，再查一次」（持续提示和自检「浏览器登录态」那一行上的按钮）：不读别的字段，auto 只决定结果
+            # 没变时发不发 notice。放后台跑、立刻返回。只有本机页面发得出来：手机入站只认 retranslate，浮窗页只读
+            self._spawn(self._recheck_browser_login(auto=msg.get("auto") is True))
+            return None
+        elif mtype in FDA_OPEN_TYPES:
+            # 「完全磁盘访问权限」那几步旁边的按钮：只认类型，别的字段一概不读，argv 写死（_open_fda）。
+            # 只有本机页面发得出来：手机入站只认 retranslate，浮窗页只读
+            return self._open_fda(mtype)
         elif mtype == "float_window":
             # 顶栏「浮窗」按钮：只显示，不碰识别、检测、审计。浏览器模式没有宿主，直接忽略
             return self._set_float_window(bool(msg.get("on")))
@@ -717,6 +730,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return self._open_flash_helper()
         elif mtype == "open_guard_dir":
             return self._open_guard_dir()      # 弹幕留意的规则文件夹，见 pipeline_guard.py
+        elif mtype == "download_asr_model":
+            # 自检「语音识别」一行的「现在下载」：待机时提前下载识别模型（app/pipeline_asr_fetch.py）。放后台跑、
+            # 立刻返回；连接中、直播中、更新中不下。只有本机页面发得出来：手机入站只认 retranslate，浮窗页的
+            # 入站一律丢弃
+            return self._request_asr_prefetch()
         elif mtype == "export_transcript":
             return self._export_transcript()   # 设置里「字幕记录」：导出最近一场，见 pipeline_transcript.py
         elif mtype == "open_transcripts_dir":
@@ -792,7 +810,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         所有桌面页面见到 config.ui_lang 和自己的不一样就重载一次。
 
         闸关着（I18N_ENABLED 为假）一律忽略：那时界面恒为中文，设置行也是隐藏的。
-        设置分组在直播中、连接中整块隐藏，所以只可能在待机时切换，重载不会打断监听。
+        连接中、直播中也会来（用户 2026-10-29 定：「字幕译成」就地提示里的按钮在这时照样给）。这里不看
+        状态、不碰监听：识别、违禁词检测、审计、手机同看都不经过桌面页面。页面重载就是 WebSocket 断开
+        再连上，重连时按此刻的语言回放字幕、报警、弹幕（server._ws），重载那一两秒里来的报警照样补进去。
         不写审计：审计记录的类型和字段一个都不加。"""
         if value not in i18n.CHOICES or not i18n.I18N_ENABLED:
             return None
@@ -1395,19 +1415,28 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return "lagging"
         return "ok"
 
-    async def _incident(self, key, level, text=""):
+    async def _incident(self, key, level, text="", recheck=False, fda=None):
         """在界面顶部持续显示、直到明确清除的提示（电脑休眠过、审计日志写不进去、
         识别改用 CPU、网络断了……）。key 相同的覆盖同一条，level="clear" 去掉。
 
         和 health（识别积压，会被「已追上」覆盖）、notice（几秒后消失）不同：这类状况
         中控必须看到，刷新页面也还在。key 以 "session:" 开头的只属于这一场，下一场
-        开始时自动清掉；其余的一直留到发出 clear。文字只写观察到的事实和能做的事。"""
+        开始时自动清掉；其余的一直留到发出 clear。文字只写观察到的事实和能做的事。
+
+        recheck=True：这一条的第一行带「我加好了，再查一次」（web/app.js），点了发 recheck_browser_login。眼下只有
+        「没有读到 TikTok 登录」那条在系统拒绝读取时带（_sync_login_incident）。不带时消息和以前逐字节相同。
+        fda（{按钮: 那一行}，browser_login.fda_button_lines）：「完全磁盘访问权限」那几步旁边的按钮跟在哪几行后面，
+        同一条在 macOS 上带（_sync_login_incident）；页面点了发 open_fda_settings 等（_open_fda）。"""
         if level == "clear":
             print("[提示] {} 已清除".format(key))
         else:
             print("[提示] {}".format(text))
-        await self.server.broadcast({"type": "incident", "id": key, "level": level,
-                                     "text": text, "ts": time.time()})
+        msg = {"type": "incident", "id": key, "level": level, "text": text, "ts": time.time()}
+        if recheck:
+            msg["recheck"] = True
+        if fda:
+            msg["fda"] = dict(fda)
+        await self.server.broadcast(msg)
 
     async def _clear_session_incidents(self):
         incidents = (getattr(self.server, "config", {}) or {}).get("incidents") or {}
@@ -2039,9 +2068,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         await self._publish_selfcheck(checks)
 
     def _asr_check_state(self):
-        """交给自检「语音识别」那一行的实际加载结果（加载失败、出错后改用了 CPU）。"""
+        """交给自检「语音识别」那一行的实际加载结果（加载失败、出错后改用了 CPU），以及待机时的提前下载
+        是不是还没完（fetching：那一行的「现在下载」置灰，见 app/pipeline_asr_fetch.py）。"""
         return {"load_error": getattr(self, "_asr_load_error", None),
-                "fallback": getattr(self, "_asr_fallback", None)}
+                "fallback": getattr(self, "_asr_fallback", None),
+                "fetching": self._asr_fetching()}
 
     async def _publish_selfcheck(self, checks):
         from .selfcheck import summarize
@@ -2429,6 +2460,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                       "下一次重连再查".format(tried))
                 break
             tried = attempt
+            if attempt > 1:
+                # 每次重试开始前说一句：一次解析本身就要约 40 秒（2026-10-29 实测 38.6–38.9 秒，WebKit 那层占 25 秒），
+                # 以前只有等待前那句「N 秒后自动重试」，接下来这次解析期间它一直挂着，屏幕上停了约 59 秒
+                await self.server.status(
+                    "connecting", L("正在第 {}/{} 次查流地址（每次约 {} 秒）…",
+                                    "Looking up the stream URL, attempt {} of {} (about {} sec each)…")
+                    .format(attempt, self.BROWSER_ONLY_RETRIES, self.BROWSER_ONLY_LOOKUP_NOTE_SEC))
             layers, t0 = [], time.monotonic()
             try:
                 with self._stage_during(sess, "lookup", self._lookup_stage_budget() if sess else None,
@@ -2442,7 +2480,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 self._log_resolve(attempt, False, t0, layers, kind=exc.kind,
                                   reconnect=reconnect, message=str(exc),  # i18n: audit
                                   login=getattr(exc, "login", None))
-                await self._sync_login_incident(layers)
+                await self._sync_login_incident(layers, getattr(exc, "login", None))
                 if exc.kind != "browser_only":
                     raise
                 last = exc
@@ -2453,6 +2491,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 await self._sync_login_incident(layers)
                 return media
             if attempt < self.BROWSER_ONLY_RETRIES and self._lookup_token_left(policy):
+                # 等待那句的事实不变，后面补一件中控现在就能做的事；登录优先那一层这次被系统拒绝读取时，再补一句
+                # 纯观察（读不到哪个浏览器、步骤在顶部那条提示里）。不说是原因
                 await self.server.status(
                     "connecting",
                     L("TikTok 暂时没有把这个直播间的流地址给程序，{:.0f} 秒后自动重试"
@@ -2460,14 +2500,49 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                       "TikTok didn’t provide a stream URL for this live stream. Retrying in "
                       "{:.0f} sec (attempt {} of {})…").format(self.BROWSER_ONLY_RETRY_SEC,
                                                               attempt + 1,
-                                                              self.BROWSER_ONLY_RETRIES))
+                                                              self.BROWSER_ONLY_RETRIES)
+                    # 英文开头带一个空格：接在前一句的「…」后面（中文句子直接相连）
+                    + L("可以先在浏览器里打开这个直播间，看看主播是不是在播。",
+                        " Meanwhile, you can open this live stream in your browser to check whether the "
+                        "streamer is live.")
+                    + self._first_layer_refused_note(layers))
                 with self._stage_during(sess, "lookup_wait",
                                         self.BROWSER_ONLY_RETRY_SEC + self.STAGE_BACKOFF_SLACK_SEC):
                     await asyncio.sleep(self.BROWSER_ONLY_RETRY_SEC)
-        raise ResolveError(browser_only_message(tried or self.BROWSER_ONLY_RETRIES,
-                                                getattr(last, "login", None)),
+        first = self._login_first()
+        err = ResolveError(browser_only_message(tried or self.BROWSER_ONLY_RETRIES,
+                                                getattr(last, "login", None), first),
                            kind="browser_only",
-                           login=getattr(last, "login", None)) from last
+                           login=getattr(last, "login", None))
+        err.login_first = first        # _fda_paths 照同一个判断决定带不带路径
+        raise err from last
+
+    # 重试前那句「每次约 N 秒」：2026-10-29 实测一次解析 38.6–38.9 秒（WebKit 那层 25 秒超时占了大半）
+    BROWSER_ONLY_LOOKUP_NOTE_SEC = 40
+
+    def _login_first(self):
+        """登录优先那一步读哪些浏览器（resolver._login_first_browsers）；查不出来是 None。"""
+        from . import resolver
+        try:
+            return tuple(resolver._login_first_browsers(getattr(self.args, "cookies_browser", "auto")))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _first_layer_refused_note(layers):
+        """这次解析里登录优先那一层（resolver.LOGIN_LAYER）记着某个浏览器被系统拒绝读取时，补在等待那句后面的
+        一句观察；没有就是空串。只说读不到哪个浏览器、步骤在哪儿，不说这就是拿不到流地址的原因。"""
+        from .browser_login import BLOCKED, label
+        from .resolver import LOGIN_LAYER
+
+        rec = next((r for r in layers or () if isinstance(r, dict) and r.get("layer") == LOGIN_LAYER), None)
+        blocked = [b for b, c in ((rec or {}).get("login") or {}).items() if c == BLOCKED]
+        if not blocked:
+            return ""
+        # 英文开头带一个空格：接在等待那句后面（中文句子直接相连）
+        return L("查流地址时没有读到 {} 里的 TikTok 登录，步骤见顶部那条提示。",
+                 " The stream URL lookup couldn’t read the TikTok sign-in from {}. The steps are in the "
+                 "notice at the top.").format(L("、", ", ").join(label(b) for b in blocked))
 
     LOGIN_SOURCE_BUDGET_SEC = 2.0     # 只读几个本地文件；到点没返回就记 null，不挡开播
     LOGIN_INCIDENT = "login-unreadable"   # 不带 "session:"：跨场保留，读到登录才撤
@@ -2485,14 +2560,19 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         except Exception:
             return None
 
-    async def _sync_login_incident(self, layers):
+    async def _sync_login_incident(self, layers, login=None):
         """按这次解析里「登录直播页」那一层的记录，挂上或撤掉「没有读到 TikTok 登录」的提示。
 
-        读到了可用的登录（那一层记着浏览器名）就撤；一个都没读到就挂，文字写各浏览器的
-        观察和能照做的步骤。监听照常开始、照常匿名解析——这条提示不挡任何事。没有那一层
-        的记录（其它平台、--cookies-browser none、用户自带流地址）或什么都没去读（测试环境）
-        时不动它。提示跨场保留，直到读到登录。"""
-        from .browser_login import NOT_READ, no_login_notice
+        读到了可用的登录（那一层记着浏览器名）就撤；那一步没读到就挂，文字写那一步的观察和能照做的
+        步骤。监听照常开始、照常匿名解析——这条提示不挡任何事。没有那一层的记录（其它平台、
+        --cookies-browser none、用户自带流地址）或什么都没去读（测试环境）时不动它。提示跨场保留，
+        直到读到登录。
+
+        挂不挂只看登录优先那一层（不变）。文字里另外照实说同一次解析里别的层读到了谁的登录：login 是
+        失败时 ResolveError.login（resolver 汇总好的），和各层记录里的 login 合在一起（_login_seen）。
+        2026-10-29 那场 Safari 被系统拒绝读取、后面几层借用了 Chrome 的登录，以前这里只拿那一层的观察，
+        头一句说成了「程序没有读到浏览器里的 TikTok 登录」。"""
+        from .browser_login import BLOCKED, NOT_READ, fda_button_lines, fda_buttons_here, no_login_notice
         from .resolver import LOGIN_LAYER
 
         rec = next((r for r in layers or () if r.get("layer") == LOGIN_LAYER), None)
@@ -2507,14 +2587,169 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             observed = {b: c for b, c in (rec.get("login") or {}).items() if c != NOT_READ}
             if not observed:
                 return
-            text = no_login_notice(observed)
-            if (incidents.get(self.LOGIN_INCIDENT) or {}).get("text") != text:
-                await self._incident(self.LOGIN_INCIDENT, "warn", text)
+            # 系统拒绝读取时，第一行带「我加好了，再查一次」（_recheck_browser_login）；在 macOS 上那几步再配上打开
+            # 设置、在访达里选中 Python（和「终端」）的按钮（_open_fda），文字按按钮写
+            recheck = BLOCKED in observed.values()
+            buttons = recheck and fda_buttons_here()
+            text = no_login_notice(observed, self._login_seen(layers, login), buttons=buttons)
+            fda = fda_button_lines() if buttons else None
+            shown = incidents.get(self.LOGIN_INCIDENT) or {}
+            if (shown.get("text") != text or bool(shown.get("recheck")) != recheck
+                    or (shown.get("fda") or None) != fda):
+                extra = {}
+                if recheck:
+                    extra["recheck"] = True
+                if fda:
+                    extra["fda"] = fda
+                await self._incident(self.LOGIN_INCIDENT, "warn", text, **extra)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             # 这一步跟在解析结果后面：提示推不出去不能把解析的结果（或它的错误）盖掉
             print("[警告] 「没有读到 TikTok 登录」的提示没能更新: {}".format(type(exc).__name__))
+
+    @staticmethod
+    def _login_seen(layers, login=None):
+        """这次解析里各浏览器的观察合在一起 {浏览器: 代码}：各层记录里的 login，再加上 ResolveError.login。
+        读到过登录（ok）的不被别的结果盖掉，和 resolver._observe_login 同一个规矩。
+
+        解析成功时没有 ResolveError：只有带登录抓直播页的那几层记录里有 login，接口层、直播页兜底只在 why 里
+        写了一句（会被截断，不从里面认）。所以成功时这里可能缺后面几层借用的浏览器——少说一句，不会说错。"""
+        from .browser_login import OK
+
+        seen = {}
+        for source in [rec.get("login") for rec in layers or () if isinstance(rec, dict)] + [login]:
+            if not isinstance(source, dict):
+                continue
+            for browser, code in source.items():
+                if seen.get(browser) != OK:
+                    seen[browser] = code
+        return seen
+
+    async def _recheck_browser_login(self, auto=False):
+        """「我加好了，再查一次」：中控照着「完全磁盘访问权限」那几步做完，回到程序里点了这个按钮（或者页面上有这个
+        按钮时，从系统设置切回窗口，页面自动发一次，见 web/app.js）。
+
+        2026-10-29 新 Mac 上，做完以后在点「开始翻译」之前没有任何地方告诉中控成没成：程序只在启动时、开场时的
+        整轮自检和下一次解析时才重新看权限；持续提示只在内存里，程序一重开就没了，跟权限生没生效无关。现在当场看：
+          * 对装了的浏览器跑一遍 browser_login.probe（不解密、不碰钥匙串，读 Safari 实测 0.0 秒），放进线程；
+          * 照 _refresh_asr_check 的做法只替换自检里「浏览器登录态」那一行，再 _publish_selfcheck（审计照
+            _audit_selfcheck，只记等级变了的行）；
+          * 登录优先那一步要读的浏览器（没点名时只有 Safari）都读到登录：撤掉「没有读到 TikTok 登录」那条提示；
+            读得到、没有登录：那条提示换成叫人去登录的那种（不再带这个按钮，也不带上一次解析里「后面几步借用了谁」
+            那一句——那是另一次观察）；仍是系统拒绝读取：提示不动；
+          * 发一句 notice（browser_login.recheck_notice），终端打一行代码。
+        要不要重开进程，由这里当场看到的结果决定；对照重查前后终端里那一行，也就量出了不重开能不能生效。
+
+        auto=True（页面在窗口重新拿到焦点时自动发的）：结果和上一次重查一样就不再发 notice，免得每次切回窗口都
+        弹一句。同时只跑一次：上一次还没跑完时来的直接丢掉。只有本机页面发得出来：手机入站只认 retranslate，
+        浮窗页的入站一律丢弃。"""
+        if getattr(self, "_login_rechecking", False):
+            return
+        self._login_rechecking = True
+        try:
+            await self._recheck_browser_login_once(bool(auto))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[警告] 浏览器登录态重查失败: {}".format(type(exc).__name__))
+        finally:
+            self._login_rechecking = False
+
+    async def _recheck_browser_login_once(self, auto):
+        from . import browser_login as bl
+        from .resolver import _login_first_browsers
+        from .selfcheck import browser_login_state
+
+        # 带上 --cookies-browser：那一行和启动自检按同一个「登录优先那一步读谁」判（selfcheck._browser_login_row 的 first）
+        observed, row = await browser_login_state(getattr(self.args, "cookies_browser", "auto"))
+        print("[信息] 浏览器登录态重查：{}".format(
+            " ".join("{}={}".format(b, c) for b, c in observed.items()) or "没有要查的浏览器"))
+        current = self._published_checks()
+        if current and any(c.get("name") == row["name"] for c in current):
+            await self._publish_selfcheck([row if c.get("name") == row["name"] else c for c in current])
+        wanted = await asyncio.get_running_loop().run_in_executor(
+            None, _login_first_browsers, getattr(self.args, "cookies_browser", "auto"))
+        first = {b: observed[b] for b in wanted if b in observed}
+        shown = self._incident_shown(self.LOGIN_INCIDENT)
+        if first and set(first.values()) == {bl.OK}:
+            if shown is not None:
+                await self._incident(self.LOGIN_INCIDENT, "clear")
+        elif first and shown is not None and bl.BLOCKED not in first.values():
+            # 不带上一次解析的 seen：「同一次解析里，后面几步借用了 Chrome」说的是那一次解析，这里 first 是刚才 probe
+            # 看到的，两件事拼成一句就成了「同一次解析里 Safari 读得到、Chrome 被借用」，哪一次解析都没这样过。
+            # 下一次解析照它自己的记录再补上那一句
+            text = bl.no_login_notice(first)
+            if shown.get("text") != text or shown.get("recheck"):
+                await self._incident(self.LOGIN_INCIDENT, "warn", text)
+        last, self._login_recheck_last = getattr(self, "_login_recheck_last", None), dict(first)
+        if auto and last == first:
+            return
+        await self.server.broadcast({"type": "notice", "text": bl.recheck_notice(first)})
+
+    # open 正常立刻返回；等这么久还没返回就当没打开（同 flash_sale.OPEN_TIMEOUT_SEC）
+    FDA_OPEN_TIMEOUT_SEC = 10
+
+    def _open_fda(self, kind):
+        """「完全磁盘访问权限」那几步旁边的按钮（持续提示和自检「浏览器登录态」那一行上，web/app.js fdaButton）：
+        open_fda_settings 打开那一页，reveal_python 在访达里选中解释器，reveal_terminal 在访达里选中「终端」。
+
+        2026-10-29 用户照着黄条的文字做不下来，是我们替他执行了这两条 open，他拖进去才成功。页面只发类型，不读别的
+        字段：argv 写死在 browser_login.fda_open_argvs，只打开系统界面，程序绝不自己改系统设置。放后台跑、立刻返回
+        （同 open_flash_helper）；同一个按钮上一次还没返回时再点什么都不做。只有本机页面发得出来：手机入站只认
+        retranslate（app/viewer.py _handle_inbound），浮窗页的入站一律丢弃（app/server.py _ws）。
+        不是 macOS 时页面上没有这几个按钮（fda 只在 macOS 上带）；硬发过来什么都不执行，只回一句 notice。"""
+        from . import browser_login as bl
+
+        if not bl.fda_buttons_here():
+            print("[信息] 完全磁盘访问权限：本机不是 macOS，{} 什么都没执行".format(kind))
+            return self.server.broadcast({"type": "notice", "text": bl.FDA_NOT_HERE})
+        opening = getattr(self, "_fda_opening", None)
+        if opening is None:
+            opening = self._fda_opening = set()
+        if kind in opening:
+            return None
+        opening.add(kind)
+        self._spawn(self._fda_open_run(kind))
+        return None
+
+    async def _fda_open_run(self, kind):
+        """跑 kind 对应的每条 open，看退出码。0：什么都不说（设置那一页、访达自己会到前面来）。非 0、超时、没能执行：
+        终端一行，再发一句 notice（browser_login.fda_open_failed）——只写 open 的退出码和自己能做的一步，不猜为什么
+        （第八条）。reveal_python 有两个路径时各跑一条，一条没成不挡另一条。"""
+        from . import browser_login as bl
+
+        try:
+            for argv in bl.fda_open_argvs(kind):
+                rc = await self._fda_exec_one(argv)
+                if rc != 0:
+                    await self.server.broadcast(
+                        {"type": "notice", "text": bl.fda_open_failed(kind, rc, argv[-1])})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[警告] 完全磁盘访问权限：{} 没能执行（{}）".format(kind, type(exc).__name__))
+        finally:
+            self._fda_opening.discard(kind)
+
+    async def _fda_exec_one(self, argv):
+        """一条 open：返回退出码；超时、没能执行时返回 None（终端各打一行）。_fda_exec 是测试换进来的假 exec。"""
+        print("[信息] 完全磁盘访问权限：执行 {}".format(" ".join(argv)))
+        run = getattr(self, "_fda_exec", None) or asyncio.create_subprocess_exec
+        try:
+            proc = await run(*argv, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            rc = await asyncio.wait_for(proc.wait(), self.FDA_OPEN_TIMEOUT_SEC)
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            print("[警告] 完全磁盘访问权限：open 等了 {} 秒还没返回".format(self.FDA_OPEN_TIMEOUT_SEC))
+            return None
+        except Exception as exc:
+            print("[警告] 完全磁盘访问权限：open 没能执行（{}）".format(type(exc).__name__))
+            return None
+        if rc != 0:
+            print("[警告] 完全磁盘访问权限：open 返回 {}，没有打开".format(rc))
+        return rc
 
     def _log_resolve(self, attempt, ok, t0, layers, kind=None, media=None,
                      reconnect=None, message=None, login=None):
@@ -3321,14 +3556,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         sess["end"] = {"reason": "model_load_failed"}
         loop = asyncio.get_running_loop()
         # 未显式指定的参数用硬件推荐补齐。注意：backend/model/device/compute 是联动
-        # 整体，用户锁定 backend/device 时其余字段围绕它重新推导（见 hwdetect.py）
-        from .hwdetect import recommend
-        rec = recommend(backend=self.args.backend, device=self.args.device)
-        backend = rec["backend"]
-        model = self.args.model or rec["model"]
-        device = rec["device"]
-        compute = (self.args.compute_type if self.args.compute_type != "auto"
-                   else rec["compute_type"])
+        # 整体，用户锁定 backend/device 时其余字段围绕它重新推导（见 hwdetect.py）。
+        # 和自检那一行、待机时提前下载用同一份推导（app/asr.py asr_plan）
+        from .asr import asr_plan
+        rec = asr_plan(self.args)
+        backend, model, device, compute = rec["backend"], rec["model"], rec["device"], rec["compute"]
         print("[信息] 识别配置: backend={} model={} device={} ({})".format(
             backend, model, device, rec["note"]))
 
@@ -3350,6 +3582,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._stage(sess, "model_load", self.STAGE_MODEL_LOAD_SEC)
         # 上一场「改用 CPU」的加载被停止打断、还在线程里跑：先等它，别和下面的加载同时驻留两份
         await self._settle_fallback_load(key)
+        # 待机时点了「现在下载」、还没下完：先等它下完，下面的加载命中缓存，不并行起第二份下载
+        await self._settle_asr_fetch()
         if self._transcriber is None or self._transcriber_key != key:
             # 正在用的是出错后改用的 CPU 模型：先放掉再加载新配置，两个模型不同时驻留
             dropped_fallback = await self._drop_fallback_transcriber()
@@ -4180,12 +4414,20 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         await self._refresh_asr_check()
 
     async def _asr_loaded_ok(self, refresh=False):
-        """按配置加载成功：之前记下的加载失败作废，自检「语音识别」那一行刷回来。"""
+        """按配置加载成功：之前记下的加载失败作废，自检「语音识别」那一行刷回来。
+
+        那一行还带着「现在下载」时也刷新：没点「现在下载」就开播，模型是这一场加载时自己下好的。不刷新的话，
+        停下后自检那一行和首页输入框下面那一行（web/app.js renderAsrHint）还说「语音模型还没下载」。"""
         if getattr(self, "_asr_load_error", None) is not None:
             self._asr_load_error = None
             refresh = True
-        if refresh:
+        if refresh or self._asr_row_offers_download():
             await self._refresh_asr_check()
+
+    def _asr_row_offers_download(self):
+        """已发布的自检里，「语音识别」那一行是不是还带着「现在下载」（action）。"""
+        from .selfcheck import ACTION_DOWNLOAD_ASR
+        return any(c.get("action") == ACTION_DOWNLOAD_ASR for c in self._published_checks() or [])
 
     async def _on_model_load_failed(self, exc, config, loop, key=None):
         """识别模型没能加载。写审计；界面上只说观察到的事和能做的事——网络、磁盘、Metal
@@ -4398,9 +4640,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     MODEL_DOWNLOAD_POLL_SEC = 3.0
 
-    async def _model_download_progress(self, model):
+    async def _model_download_progress(self, model, report=None, baseline=None, share=None):
         """模型加载期间轮询 HuggingFace 缓存目录的增量，把下载进度推到 UI。
-        没有真的在下载（缓存已存在）时增量趋近于零，不会打扰用户。每 MODEL_DOWNLOAD_POLL_SEC 秒看一次。"""
+        没有真的在下载（缓存已存在）时增量趋近于零，不会打扰用户。每 MODEL_DOWNLOAD_POLL_SEC 秒看一次。
+        report 是 async (text, pct, mb) 回调：给了就交给它（待机时提前下载走 _provision_note，见
+        app/pipeline_asr_fetch.py），不给就照旧发 connecting 状态、带结构化的 progress。
+
+        增量从 baseline（缓存目录的字节数）算起；不给就开头量一次。share 是个 dict：给了就把量到的起点记进
+        share["baseline"]。提前下载用它记下自己的起点，下到一半点了开始，开播那边（_settle_asr_fetch）从同一个
+        起点算——不然进度从点开始那一刻重新从 0% 算，已经下好的几 GB 不算在里面。"""
         try:
             hf_home = os.environ.get("HF_HOME")
             cache = (Path(hf_home) / "hub" if hf_home
@@ -4419,7 +4667,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 return total
 
             loop = asyncio.get_running_loop()
-            baseline = await loop.run_in_executor(None, _du)
+            if baseline is None:
+                baseline = await loop.run_in_executor(None, _du)
+            if share is not None:
+                share["baseline"] = baseline
             expected = MODEL_SIZES_MB.get(model)
             while True:
                 await asyncio.sleep(self.MODEL_DOWNLOAD_POLL_SEC)
@@ -4443,6 +4694,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 # 结构化的进度（专家审查 U7）：页面中间那张「正在连接」卡片只认它，不去解析 detail 的文字——
                 # connecting 状态下 detail 几乎从不为空（本文件里有十来处在发），看到 detail 就显示会和顶部
                 # 横幅重复同一句话。只有这里带：其余 connecting 都不带这个键。pct 在模型大小未知时是 null
+                if report is not None:
+                    await report(text, pct, int(round(done_mb)))
+                    continue
                 await self.server.status("connecting", text, progress={
                     "kind": "model_download", "pct": pct, "mb": int(round(done_mb))})
         except asyncio.CancelledError:
@@ -4961,12 +5215,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     # 定义在 translator.py（启动恢复引擎时也要用），这里保留同名类属性
     ENGINE_KEY_ENV = ENGINE_KEY_ENV
 
-    async def set_engine(self, engine, key=None):
+    async def set_engine(self, engine, key=None, workspace=None):
         """从界面切换翻译引擎、并（可选）存下密钥。
 
         密钥存进 settings.json（已在 .gitignore 里），**从不回传页面**——
         回传的只有打码后的尾四位，够用户确认「我填的是哪一个」，
         又不至于让密钥出现在任何一条 WebSocket 消息里。
+
+        workspace：选 Claude 时页面上工作区 ID 框里的字（不绑工作区的密钥要它，见 translator.WORKSPACE_ENV）。
+        None 表示页面没发（别的引擎），不动；空串表示清掉。不是 wrkspc_ 开头的一串就整次不存、不换引擎，
+        提示一句——存进去也只会让每个请求都 400。
 
         选的是本地引擎、而本机 Ollama（在跑）里没有它的模型时**先不换**：直播中本场
         继续用原来的引擎、停止后自动下载；不在直播就马上开始下载，下好再换上。以前
@@ -4974,16 +5232,35 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         还是绿的。
         """
         from .settings import save_setting
-        from .translator import TRANSLATOR_CHOICES, saved_keys
+        from .translator import TRANSLATOR_CHOICES, WORKSPACE_ENV, WORKSPACE_ID_RE, saved_keys
 
         if engine not in TRANSLATOR_CHOICES:
             return
+        workspace = str(workspace).strip() if isinstance(workspace, str) and engine == "claude" else None
+        if workspace and not WORKSPACE_ID_RE.fullmatch(workspace):
+            await self.server.broadcast({"type": "notice", "text": L(
+                "工作区 ID 是 wrkspc_ 开头的一串字母和数字（Claude Console 的 Workspaces 页面上有），"
+                "这次没有保存，请检查后再点「保存」",
+                "A workspace ID starts with wrkspc_ followed by letters and numbers. It’s listed on "
+                "the Workspaces page in the Claude Console. Nothing was saved. Check it and click "
+                "Save again.")})
+            return
+        keys = saved_keys()
+        changed = False
         if key:
             env = self.ENGINE_KEY_ENV.get(engine)
             if env:
-                keys = saved_keys()
                 keys[env] = key.strip()
-                save_setting("api_keys", keys)
+                changed = True
+        if workspace is not None and keys.get(WORKSPACE_ENV, "") != workspace:
+            if workspace:
+                keys[WORKSPACE_ENV] = workspace
+            else:
+                keys.pop(WORKSPACE_ENV, None)
+            changed = True
+        if changed:
+            save_setting("api_keys", keys)
+            self._anthropic_keys_saved()     # 弹幕留意的复核用同一把密钥和工作区 ID（pipeline_guard.py）
         missing = await self._local_model_missing(engine)
         if missing is not None:
             await self._keep_engine_until_model(engine, missing)
@@ -5076,7 +5353,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     async def _publish_engine(self):
         """把当前引擎和各密钥的填写状态告诉页面（密钥只给尾四位）。"""
         from .settings import load_settings
-        from .translator import engine_label, mask_key
+        from .translator import WORKSPACE_ENV, engine_label, mask_key
 
         await self._announce_settings_backup()
         stored = load_settings().get("api_keys", {})
@@ -5102,7 +5379,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 # 终端里 print 过一遍，但窗口应用的用户看不到终端
                 "note": getattr(self.args, "translator_note", None),
                 "keys": {env: mask_key(os.environ.get(env) or stored.get(env, ""))
-                         for env in self.ENGINE_KEY_ENV.values()}}
+                         for env in self.ENGINE_KEY_ENV.values()},
+                # Claude 的工作区 ID 不是密钥：照原样给页面，框里显示的就是在用的那个（环境变量优先，同 api_key）
+                "workspace_id": str(os.environ.get(WORKSPACE_ENV) or stored.get(WORKSPACE_ENV, "")).strip()}
         self.server.config["engine"] = info
         await self.server.broadcast({"type": "engine", **info})
         # 引擎每次换都会走到这里：翻译器已经不是 Google 了，「改发 Google」那条持续提示跟着撤
@@ -5459,7 +5738,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             translation_engine_error 带 kind（timeout / connect / http / other）+ 一行终端。不挂横幅：页面上
             「连续 4 条失败」的通用横幅兜底。同一个引擎、同一场、同一种 kind 只记一次，见 _note_failure_kind。
         返回本场改用的本地引擎，没有就是 None。文字只写回应本身和能做的事，不猜原因。"""
-        from .translator import BaseTranslator, engine_label
+        from .translator import BaseTranslator, engine_label, workspace_missing
 
         if tr is not self.translator:
             return None                 # 这条翻译期间引擎已经换了：旧引擎的事不再报
@@ -5523,10 +5802,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         else L("重新填写密钥，或换一个引擎",
                                "re-enter the API key or choose another engine")))
             return fallback
+        no_workspace = status == 400 and workspace_missing(tr, said)
         if name == "claude" and status in (400, 402) \
-                and getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK:
+                and (no_workspace or getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK):
             # 接口正常回了话、只是不收这些请求：照抄它的原话（error.type: error.message），
-            # 不替它解释原因。单独一次 400 可能只是某一句，连续几次才说
+            # 不替它解释原因。单独一次 400 可能只是某一句，连续几次才说。
+            # 例外是「密钥没绑工作区」（workspace_missing）：说的是密钥不是这一句，第一次就说，
+            # 横幅换成成对的一句、说清能做的两件事；审计和终端照旧写原话
             self._engine_error_mark = mark
             if audit is not None:
                 audit.translation_engine_error(name, status, error=said, model=model)
@@ -5537,12 +5819,26 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             print("[警告] " + what)
             self._engine_incident_up = True
             self._engine_rejection = None
-            await self._incident(
-                self.ENGINE_INCIDENT, "error",
-                L("{}。字幕先显示原文（违禁词报警不受影响）；点「停止」后可以在「设置 > 翻译引擎」里换一个引擎",
-                  "{}. Captions show the original text (banned-term alerts aren’t affected). "
-                  "After you click Stop, you can choose another engine in Settings > Translation "
-                  "Engine.").format(what))
+            if no_workspace:
+                text = L("{} 返回 HTTP {}：Anthropic 说这把密钥没有绑定工作区，请求里要带工作区 ID。"
+                         "字幕先显示原文（违禁词报警不受影响）。点「停止」后，可以在 Claude Console "
+                         "新建一把选了工作区（例如 Default）的密钥、在「设置 > 翻译引擎」里重新填写；"
+                         "或者在「设置 > 翻译引擎」里填上工作区 ID（wrkspc_ 开头，Console 的 "
+                         "Workspaces 页面上有）",
+                         "{} returned HTTP {}: Anthropic says this API key isn’t scoped to a "
+                         "workspace, so requests need a workspace ID. Captions show the original "
+                         "text (banned-term alerts aren’t affected). After you click Stop, you can "
+                         "create a key with a workspace selected (for example, Default) in the "
+                         "Claude Console and enter it in Settings > Translation Engine, or enter "
+                         "the workspace ID in Settings > Translation Engine. It starts with wrkspc_ "
+                         "and is listed on the Workspaces page in the Console.").format(label, status)
+            else:
+                text = L("{}。字幕先显示原文（违禁词报警不受影响）；点「停止」后可以在「设置 > 翻译引擎」里"
+                         "换一个引擎",
+                         "{}. Captions show the original text (banned-term alerts aren’t affected). "
+                         "After you click Stop, you can choose another engine in Settings > Translation "
+                         "Engine.").format(what)
+            await self._incident(self.ENGINE_INCIDENT, "error", text)
             return None
         if name in ("hymt2", "hymt2-7b", "gemma") \
                 and getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK:
@@ -6198,7 +6494,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     def _retranslate_failure_text(self, strong, error_before, outcome, discarded, had):
         """这次重译没出译文：把观察到的事说出来，后面接上这一条现在是什么样。"""
-        from .translator import model_label
+        from .translator import model_label, said_for_ui
 
         # Claude 这时同时有三个模型在用（字幕 Haiku、弹幕 Haiku、重译 Sonnet），只写「Claude」
         # 看不出是哪一个在报错：写模型名
@@ -6221,10 +6517,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                      "for {} sec").format(engine, error[0], int(round(paused)))
         elif error and error[0] is not None and error is not error_before and error[1]:
             # 400/402 带着接口自己的说明（引擎只在这两种回应里留原话，见 ClaudeTranslator.
-            # SAYS_WHY_STATUSES）：照抄，和引擎横幅一样，不替它解释
+            # SAYS_WHY_STATUSES）：照抄，和引擎横幅一样，不替它解释（「密钥没绑工作区」换成成对的一句，said_for_ui）
             head = L("重译没有成功：{} 返回 HTTP {}（{}）",
                      "Couldn’t retranslate: {} returned HTTP {} ({})").format(
-                engine, error[0], error[1].rstrip(" .。"))  # i18n: data（接口原话，去掉末尾句号）
+                engine, error[0], said_for_ui(strong, error[1]))
         elif error and error[0] is not None and error is not error_before:
             head = L("重译没有成功：{} 返回 HTTP {}",
                      "Couldn’t retranslate: {} returned HTTP {}").format(engine, error[0])

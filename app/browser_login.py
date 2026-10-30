@@ -28,7 +28,7 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
-from .i18n import L
+from .i18n import LN, L
 
 # TikTok 登录后才有的 cookie 名字
 LOGIN_COOKIE_NAMES = ("sessionid", "sessionid_ss", "sid_tt", "sid_guard")
@@ -388,40 +388,173 @@ def fda_targets(environ=None, executable=None):
     return targets
 
 
-def fda_steps(targets=None):
-    """系统拒绝读取时能照做的几步，分行写（专家审查 I8、S2）：
+# 「终端」这个 app 的位置（macOS 10.15 起在 /System 下）。从终端启动时第 2 步要把它也加进去
+TERMINAL_APP = "/System/Applications/Utilities/Terminal.app"
 
-      * 每个路径单独一行（照旧用「」括起来，自检那一行里手动选中时有个边界）。以前路径夹在一句话的末尾
-        （「…打开：「/opt/…/python3.13」。」），说着「粘贴下面的路径」，下面却什么都没有，选的时候还容易
-        带上句号。解析失败的横幅里这几行由页面换成可复制的代码行（status.paths，app/pipeline.py _fda_paths；
-        web/app.js 只按那个结构化字段认路径行，不从文字里猜），自检那一行和终端里照文字分行显示；
-      * 加一句：列表里已经有这一项、开关也开着时，删掉再加一次。只写看得到的（列表里有、开着，系统仍然
-        拒绝读取——这段话只在系统拒绝读取时出现）和能做的，不写为什么会这样：「解释器原地换了文件，
-        系统按文件指纹认它」没有实测过；
-      * 讲清这项权限管到哪里（D6，用户 10-22 按推荐「维持授权，把范围讲清楚」）：给的是 Python 解释器，
-        用它运行的任何脚本都能读这台电脑上受保护的数据；不再需要借浏览器里的 TikTok 登录时，可以在同一个
-        列表里关掉。这一句单独占最后一行，后面接的别的步骤都另起一行（steps_text、no_login_notice），免得读起来
-        像是在接着讲权限范围（审查第 1 轮）。"""
+
+def started_from_terminal(environ=None):
+    """本程序是不是从终端里启动的（双击 Start.command、在终端里运行 python3 main.py）。
+
+    2026-10-29：中控从「聚焦搜索」点 .app 启动，「完全磁盘访问权限」那几步却照样写着「用 Start.command 启动的话
+    把「终端」也加进去」，照着做不下来。终端会给在它里面跑的程序设 TERM（「终端」和 iTerm2 还设 TERM_PROGRAM），
+    环境变量跟着 exec 一路带到最终进程；从访达、程序坞、聚焦搜索打开 .app 时，系统给的环境里没有这两个。
+    只看环境变量、不看 isatty：`| tee` 这类重定向下 stdout 不是终端，程序照样是从终端启动的。"""
+    env = os.environ if environ is None else environ
+    return bool(env.get("TERM_PROGRAM") or env.get("TERM"))
+
+
+def quit_step(terminal=None):
+    """「完全退出本程序再打开」那一步，按启动方式写。terminal 为 None 时按 started_from_terminal()。"""
+    terminal = started_from_terminal() if terminal is None else terminal
+    if terminal:
+        return L("完全退出本程序，再从终端启动它（比如双击 Start.command）；系统要「终端」退出并重新打开时，照做。",
+                 "Quit the app completely, then start it from a terminal again (for example, with "
+                 "Start.command). If macOS asks to quit and reopen Terminal, do that.")
+    return L("按 ⌘Q 完全退出本程序，再打开它。", "Press ⌘Q to quit the app completely, then open it again.")
+
+
+# ---- 「完全磁盘访问权限」那几步旁边的按钮 -----------------------------------------------------------
+#
+# 2026-10-29 新 Mac 上，用户照着黄条的文字做不下来：是我们替他执行了
+#   open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+#   open -R <解释器的真实路径>
+# 他把访达里选中的那个文件拖进列表才成功。这几个按钮做的就是这两条命令（从终端启动时再加一条选中「终端」），
+# 只打开系统界面，程序绝不自己改系统设置。页面发来的指令只有类型（app/pipeline.py _open_fda），argv 全在这里写死，
+# 不收页面传来的任何路径或参数。只在 macOS 上有（fda_buttons_here）。
+FDA_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+FDA_OPEN_SETTINGS = "open_fda_settings"
+FDA_REVEAL_PYTHON = "reveal_python"
+FDA_REVEAL_TERMINAL = "reveal_terminal"
+FDA_OPEN_TYPES = (FDA_OPEN_SETTINGS, FDA_REVEAL_PYTHON, FDA_REVEAL_TERMINAL)
+# 按钮上的字（web/app.js fdaLabel 同一套）。第 1、2 步和「终端」那一句按这个名字叫人去点（fda_steps(buttons=True)）
+FDA_BUTTON_LABELS = {
+    "settings": L("打开完全磁盘访问设置", "Open Full Disk Access Settings"),
+    "python": L("在访达里选中 Python", "Show Python in Finder"),
+    "terminal": L("在访达里选中终端", "Show Terminal in Finder"),
+}
+# 这台电脑不是 macOS，指令硬发过来时回的那一句：什么都不执行
+FDA_NOT_HERE = L("这个按钮只在 macOS 上用得到，本机什么都没打开。",
+                 "This button is only for macOS. Nothing was opened on this computer.")
+
+
+def fda_buttons_here(platform=None):
+    """这几个按钮只在 macOS 上有：别的平台没有「完全磁盘访问权限」这一页，也没有访达。"""
+    return (sys.platform if platform is None else platform) == "darwin"
+
+
+def fda_open_argvs(kind, targets=None):
+    """按钮对应的 open 命令，每条一个 argv；认不出的 kind 是空列表。
+
+    reveal_python 选中的是 fda_targets() 里的每个路径：和那几步里列的、黄条上写的是同一份，sys.executable 解析
+    符号链接以后的那个一定在里面（另一个是启动用的解释器，和它不同时才多一条）。每个路径单独一条 open -R，
+    一条没成不挡另一条。"""
+    if kind == FDA_OPEN_SETTINGS:
+        return [["open", FDA_SETTINGS_URL]]
+    if kind == FDA_REVEAL_PYTHON:
+        targets = fda_targets() if targets is None else list(targets)
+        return [["open", "-R", path] for path in targets]
+    if kind == FDA_REVEAL_TERMINAL:
+        return [["open", "-R", TERMINAL_APP]]
+    return []
+
+
+def fda_open_failed(kind, rc=None, target=None):
+    """按钮的 open 没成时那一句 notice：只说看到的（open 的退出码；没拿到退出码——超时、没能执行——就不写）和
+    自己能做的一步（第八条：不猜为什么）。target 是这一条 open -R 选中的路径。"""
+    code = L("（open 返回 {}）", " (open returned {})").format(rc) if rc is not None else ""
+    if kind == FDA_OPEN_SETTINGS:
+        return L("没能打开「完全磁盘访问权限」那一页{}。可以自己打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。",
+                 "Couldn’t open the Full Disk Access page{}. You can open System Settings > Privacy & Security > "
+                 "Full Disk Access yourself.").format(code)
+    return L("没能在访达里选中「{}」{}。可以在「完全磁盘访问权限」的列表下面点「+」，按 ⌘⇧G，粘贴这个路径后回车、"
+             "点「打开」。",
+             "Couldn’t show “{}” in Finder{}. You can click + under the Full Disk Access list, press ⌘⇧G, paste "
+             "this path, press Return, and click Open.").format(target or "", code)
+
+
+def fda_button_lines(targets=None, terminal=None):
+    """带按钮的那几步（fda_steps(buttons=True)）里，每个按钮跟在哪一行后面：{"settings"|"python"|"terminal": 那一行}。
+    「终端」那一个只在从终端启动时有。页面只拿这几行整行比对（web/app.js drawFdaLines，同 pathOfLine），不从文字里猜。"""
+    return _fda_lines(targets, terminal, True)[1]
+
+
+def fda_steps(targets=None, terminal=None, buttons=False):
+    """系统拒绝读取时能照做的几步：头一句、编号的三步、两行补充。
+
+    2026-10-29 新 Mac 上，中控照着以前那一整段长文（系统设置路径、+、⌘⇧G、粘贴、回车、打开、开关、列表里叫
+    python3.x、已在列表要先删再加、Start.command 要加「终端」、完全退出重开、权限范围）做不下来。现在：
+      * 头一句一行（「照下面三步给 Python 打开…」），「没有读到 TikTok 登录」那条持续提示把它接在第一行末尾
+        （no_login_notice）——页面折叠时只露第一行，动作要在那一行里；
+      * 三步各占一行、带编号：打开那一页；点「+」加 Python（路径在下面，每个路径单独一行）；完全退出再打开；
+      * 「终端」那几句只对从终端启动的人说（started_from_terminal；terminal 显式给的话按给的）：从 .app 启动时
+        系统登记的是解释器的路径（fda_targets 的说明），「终端」不相干；
+      * 后面两行：列表里已经有它、开关也开着还是这样，删掉再做一次第 2 步（专家审查 I8；只写看得到的和能做的，
+        不写为什么，「解释器换了文件，系统按指纹认它」没实测过）；权限范围（D6，用户 10-22 按推荐「维持授权，把
+        范围讲清楚」）一字不改、单独占最后一行，后面接的别的步骤都另起一行（steps_text、no_login_notice）。
+
+    路径行照旧整行就是「路径」（专家审查 I8）：解析失败的横幅里这几行由页面换成可复制的代码行（status.paths，
+    app/pipeline.py _fda_paths；web/app.js 只按那个结构化字段认路径行，不从文字里猜），自检那一行和终端里照文字分行
+    显示。
+
+    buttons=True（持续提示和自检「浏览器登录态」那一行，页面在 macOS 上画按钮，见 fda_button_lines）：第 1 步叫人点
+    「打开完全磁盘访问设置」，第 2 步叫人点「在访达里选中 Python」、把选中的文件拖进列表（2026-10-29 用户就是这样做成
+    的），从终端启动时「终端」那一句单独一行、叫人点「在访达里选中终端」。⌘⇧G 手动粘贴挪进 README / docs/faq 当备用，
+    按钮打开失败时那一句 notice 里也给（fda_open_failed）。buttons=False（解析失败的横幅，那里没有按钮）照旧是
+    ⌘⇧G 的写法。"""
+    return L("\n", "\n").join(_fda_lines(targets, terminal, buttons)[0])
+
+
+def _fda_lines(targets, terminal, buttons):
+    """(fda_steps 的各行, {按钮: 它跟在后面的那一行})。不带按钮时第二项是空的。"""
     targets = fda_targets() if targets is None else list(targets)
-    return L("到「系统设置」→「隐私与安全性」→「完全磁盘访问权限」，点「+」，在选文件的窗口里按 "
-             "⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开{}：\n{}\n"
-             "列表里显示的名字是 {}，不是本程序的名字。如果列表里已经有这一项、开关也开着，先选中它点"
-             "「−」删掉，再按上面的步骤加一次。用 Start.command 启动的话把「终端」也加进去。"
-             "然后完全退出程序再打开。\n"
-             "这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上"
-             "受保护的数据。不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。",
-             "Go to System Settings > Privacy & Security > Full Disk Access and click +. In the "
-             "file window, press ⌘⇧G, paste the path below, press Return, click Open, and turn on "
-             "its switch{}:\n{}\nThe list shows {}, not the app’s name. If it’s already in the list "
-             "with its switch on, select it, click −, and add it again with the steps above. If you "
-             "start the app with Start.command, add Terminal too. Then quit the app completely and "
-             "open it again.\n"
-             "This permission goes to the Python interpreter, not just this app, so any script it "
-             "runs can read protected data on this computer. When you no longer need the TikTok "
-             "sign-in from your browser, you can turn its switch off in the same list.").format(
-                L("（每个路径各做一遍）", " (do this for each path)") if len(targets) > 1 else "",
-                L("\n", "\n").join(L("「{}」", "“{}”").format(t) for t in targets),
-                L("、", ", ").join(os.path.basename(t) for t in targets))
+    terminal = started_from_terminal() if terminal is None else terminal
+    names = L("、", ", ").join(os.path.basename(t) for t in targets)
+    paths = L("\n", "\n").join(L("「{}」", "“{}”").format(t) for t in targets)
+    each = L("（每个路径各做一遍）", " (do this for each path)") if len(targets) > 1 else ""
+    named = L("列表里显示的名字是 {}，不是本程序的名字。", "The list shows {}, not the app’s name.").format(names)
+    lines = [L("照下面三步给 Python 打开「完全磁盘访问权限」：", "Follow these three steps to turn on Full Disk Access for Python:")]
+    anchors = {}
+    if buttons:
+        anchors["settings"] = L("1. 点「{}」，会打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。",
+                                "1. Click {}. It opens System Settings > Privacy & Security > Full Disk Access.").format(
+                                    FDA_BUTTON_LABELS["settings"])
+        anchors["python"] = (L("2. 点「{}」，把访达里选中的文件拖进那一页的列表，再把它的开关打开{}。",
+                               "2. Click {}, drag the selected file into the list on that page, and turn on its "
+                               "switch{}.").format(FDA_BUTTON_LABELS["python"], each)
+                             + _space_before(LN(len(targets), "要加的文件：", "File to add:", "Files to add:")))
+        lines += [anchors["settings"], anchors["python"], paths, named]
+        if terminal:
+            anchors["terminal"] = L("本程序是从终端启动的：点「{}」，把「终端」也拖进那个列表，再打开它的开关。",
+                                    "The app was started from a terminal. Click {}, drag Terminal into the same "
+                                    "list, and turn on its switch.").format(FDA_BUTTON_LABELS["terminal"])
+            lines.append(anchors["terminal"])
+    else:
+        lines += [
+            L("1. 打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。",
+              "1. Open System Settings > Privacy & Security > Full Disk Access."),
+            L("2. 点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开{}：",
+              "2. Click +. In the file window, press ⌘⇧G, paste the path below, press Return, click Open, "
+              "and turn on its switch{}:").format(each),
+            paths,
+            named,
+        ]
+        if terminal:
+            lines[-1] = lines[-1] + _space_before(
+                L("本程序是从终端启动的：「终端」也照这样加进去，按 ⌘⇧G 时粘贴「{}」。",
+                  "The app was started from a terminal. Add Terminal the same way: after ⌘⇧G, paste "
+                  "“{}”.").format(TERMINAL_APP))
+    lines += [
+        L("3. ", "3. ") + quit_step(terminal),
+        L("列表里已经有它、开关也开着还是这样：选中它点「−」删掉，再做一次第 2 步。",
+          "If it’s already in the list with its switch on and you still see this, select it, click −, and "
+          "do step 2 again."),
+        L("这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。"
+          "不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。",
+          "This permission goes to the Python interpreter, not just this app, so any script it runs can read "
+          "protected data on this computer. When you no longer need the TikTok sign-in from your browser, you "
+          "can turn its switch off in the same list."),
+    ]
+    return lines, anchors
 
 
 def decrypt_steps(browsers):
@@ -474,8 +607,8 @@ def observed_text(login):
                              for b, c in (login or {}).items())
 
 
-def steps_text(login, lines=False):
-    """和这些观察对应的、能照做的步骤（可能不止一步）。
+def steps_text(login, lines=False, buttons=False):
+    """和这些观察对应的、能照做的步骤（可能不止一步）。buttons 原样交给 fda_steps（自检那一行在 macOS 上画按钮时为真）。
 
     lines=True（解析失败那段话，browser_only_advice）：带「完全磁盘访问权限」那几步（分了行，最后一行是权限
     范围）时每一步另起一行——「在 Chrome 里登录」「钥匙串」接在权限范围那句后面，读起来像是在接着讲权限（审查
@@ -485,7 +618,7 @@ def steps_text(login, lines=False):
     codes = set(login.values())
     steps = []
     if BLOCKED in codes:
-        steps.append(FDA_OBSERVED + fda_steps())
+        steps.append(FDA_OBSERVED + fda_steps(buttons=buttons))
     if codes & {NOT_LOGGED_IN, NO_TIKTOK, NO_DATA}:
         steps.append(LOGIN_STEPS)
     if CANNOT_DECRYPT in codes:
@@ -514,60 +647,166 @@ def _space_before(text):
 
 
 SAFARI_LOGIN_STEPS = L("请在 Safari 里登录 TikTok。", "Sign in to TikTok in Safari.")
-# 「没有读到 TikTok 登录」那条持续提示带完全磁盘访问权限那几步时，最后一行的开头（no_login_notice）
-SELFCHECK_POINTER = L("（这些步骤在自检「浏览器登录态」一行里也有。）",
-                      "(These steps are also in the Browser Login row of Settings > Startup Check.)")
+# 中控点名了别的浏览器时，登录优先那一步读的就是它（resolver._login_first_browsers），叫人去登录的那一步按它写
+_SIGN_IN_STEPS = L("请在 {} 里登录 TikTok。", "Sign in to TikTok in {}.")
+# 读得到（或者还没有 cookie 库）、只是里面没有可用的登录：能照做的一步是去登录
+_SIGN_IN_CODES = (NOT_LOGGED_IN, NO_TIKTOK, NO_DATA, READABLE)
 
 
-def no_login_notice(login):
-    """一个可用的 TikTok 登录都没读到时，挂在界面顶部的那条持续提示（不挡开播，读到登录
-    就撤）。写三件事：看到了什么、这意味着哪类直播间拿不到、能照做的步骤。
+def no_login_notice(login, seen=None, buttons=False):
+    """登录优先那一步（resolver.LOGIN_LAYER）没读到可用的 TikTok 登录时，挂在界面顶部的那条持续提示（不挡开播，
+    那一步读到登录就撤）。写三件事：那一步读了什么、看到了什么；能照做的步骤；这意味着哪类直播间拿不到。
 
-    2026-09-17 实测：有的直播间，TikTok 给未登录访问的直播页里没有流地址，带登录去抓才有。
-    macOS 上程序先读 Safari（见 resolver._installed_browsers），所以步骤说的是 Safari。"""
+    login 是那一步的观察 {浏览器: 代码}：没点名浏览器时只有 Safari（resolver._login_first_browsers）。seen 是同一次
+    解析里各层的观察合在一起（pipeline._login_seen），只用来照实补一句「后面几步借用了 Chrome 里的登录」。
+
+    2026-10-29 新 Mac 上的第一场：这条提示的头一句是「程序没有读到浏览器里的 TikTok 登录——Safari：系统拒绝读取」，
+    第一行的动作是「请在 Safari 里登录 TikTok」；同一时刻自检写着「Chrome：读到了 TikTok 登录」，后面几层也借用了
+    Chrome 的登录。中控 Safari 里早就登录着，照第一行去做是白忙，真正要做的授权几步折在「显示全部步骤」后面；最后
+    一行指向的自检「浏览器登录态」那一行，因为 Chrome 读到了登录是「通过」、不带步骤，直播中设置分组又整块收着。现在：
+      * 头一句只说登录优先那一步读了什么、看到了什么，不再说「没有读到浏览器里的 TikTok 登录」；
+      * 系统拒绝读取时，第一行的动作就是授权：fda_steps 的头一句接在第一行末尾，几步和路径在下面
+        （页面上超过 3 行的持续提示只露第一行和「显示全部步骤」，web/app.js foldIncident）；
+      * 「请在 Safari 里登录」只在那一步读得到、里面没有登录时出现；
+      * 不再指向自检那一行：步骤就在这条提示里。
+    影响哪类直播间和「自动消失」放在最后（分行时单独成最后一行，不接在权限范围那句后面，审查第 1 轮）。
+
+    buttons=True（pipeline._sync_login_incident 在 macOS 上给）：那几步按页面上的按钮写（fda_steps(buttons=True)），
+    这条提示同时带 fda_button_lines，页面把按钮接在对应的那一行后面。"""
     login = {b: c for b, c in (login or {}).items() if c != NOT_READ}
     codes = set(login.values())
-    head = _NO_LOGIN_HEAD.format(observed_text(login) or L("没有找到可读取的浏览器", "No readable browser found"))
+    head = _first_step_head(login) + _space_before(_borrowed_later(login, seen))
     if BLOCKED in codes:
-        # 带「完全磁盘访问权限」那几步时分行写（审查第 1 轮）：第一行是看到了什么、影响哪类直播间、在 Safari 里
-        # 登录——页面上超过 3 行的持续提示默认只露这一行和「显示全部步骤」（web/app.js foldIncident），它读到登录
-        # 之前一直挂在顶部、直播中也在，全展开 1000 宽下八九行。完全磁盘访问权限那几步（fda_steps，最后一行是
-        # 权限范围）、钥匙串各自另起一行；自检指引和「自动消失」放在最后单独一行，不接在权限范围那句后面
-        # （接在后面，「这些步骤」容易被读成是在说权限范围那句）
-        lines = [head + _space_before(SAFARI_LOGIN_STEPS), FDA_OBSERVED + fda_steps()]
+        lines = [head + _space_before(fda_steps(buttons=buttons))]
         if KEYCHAIN_WAIT in codes:
             lines.append(KEYCHAIN_STEPS)
-        lines.append(SELFCHECK_POINTER + _space_before(_NO_LOGIN_TAIL))
+        lines.append(_NO_LOGIN_IMPACT + _space_before(_NO_LOGIN_TAIL))
         return L("\n", "\n").join(lines)
-    steps = [SAFARI_LOGIN_STEPS]
+    steps = []
+    sign_in = [b for b, c in login.items() if c in _SIGN_IN_CODES]
+    if sign_in:
+        steps.append(SAFARI_LOGIN_STEPS if sign_in == ["safari"]
+                     else _SIGN_IN_STEPS.format(L("、", ", ").join(label(b) for b in sign_in)))
+    if CANNOT_DECRYPT in codes:
+        steps.append(decrypt_steps([b for b, c in login.items() if c == CANNOT_DECRYPT]))
     if KEYCHAIN_WAIT in codes:
         steps.append(KEYCHAIN_STEPS)
     # 只有一行：中文句子直接相连，英文句子之间一个空格
-    return head + _space_before(L("", " ").join(steps)) + _space_before(_NO_LOGIN_TAIL)
+    return (head + _space_before(_NO_LOGIN_IMPACT) + _space_before(L("", " ").join(steps))
+            + _space_before(_NO_LOGIN_TAIL))
 
 
-_NO_LOGIN_HEAD = L("程序没有读到浏览器里的 TikTok 登录——{}。有的直播间 TikTok 只把流地址给已登录的"
-                   "观众，读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听，监听不会"
-                   "因此停下。",
-                   "The app didn’t find a TikTok sign-in in your browsers. {}. For some live streams, "
-                   "TikTok provides the stream URL only to signed-in viewers, so those live streams "
-                   "may not get a stream URL until a sign-in is found. Other live streams are "
-                   "monitored as usual.")
+def _first_step_head(login):
+    """持续提示的头一句：登录优先那一步读了哪个浏览器、看到了什么。"""
+    if not login:
+        return L("解析流地址时，登录优先这一步没有找到可读取的浏览器。",
+                 "When looking up the stream URL, the app’s first step didn’t find a browser it could "
+                 "read a TikTok sign-in from.")
+    return L("解析流地址时，登录优先这一步只读 {} 里的 TikTok 登录——{}。",
+             "When looking up the stream URL, the app first reads the TikTok sign-in from {} only. "
+             "{}.").format(L("、", ", ").join(label(b) for b in login), observed_text(login))
+
+
+def _borrowed_later(login, seen):
+    """同一次解析里，登录优先那一步以外的浏览器读到了登录（后面几步借用了它）：照实说一句。没有就是空串。"""
+    others = [b for b, c in (seen or {}).items() if c == OK and b not in login]
+    if not others:
+        return ""
+    return L("同一次解析里，后面几步借用了 {} 里的 TikTok 登录。",
+             "Later steps of the same lookup used the TikTok sign-in from {}.").format(
+                 L("、", ", ").join(label(b) for b in others))
+
+
+_NO_LOGIN_IMPACT = L("有的直播间 TikTok 只把流地址给已登录的观众，这一步读到登录之前，这类直播间可能解析不出"
+                     "流地址；其余直播间照常监听，监听不会因此停下。",
+                     "For some live streams, TikTok provides the stream URL only to signed-in viewers, so "
+                     "those live streams may not get a stream URL until this step finds a sign-in. Other "
+                     "live streams are monitored as usual.")
 _NO_LOGIN_TAIL = L("读到登录后这条提示自动消失。", "This notice disappears once a sign-in is found.")
+
+
+def recheck_notice(first, terminal=None):
+    """「我加好了，再查一次」（pipeline._recheck_browser_login）之后的那一句 notice：登录优先那一步要读的浏览器
+    （first，{浏览器: probe 的代码}）现在读不读得到。只写看到的和能做的一步。
+
+    2026-10-29 新 Mac 上，中控照着做完以后，在点「开始翻译」之前没有任何地方告诉他成没成：程序只在启动、开场的
+    整轮自检和下一次解析时才重新看权限，自检那一行在 Chrome 读到登录时本来就是「通过」，开没开权限看起来一样。
+    要不要重开进程，由这里当场看到的结果说：系统仍然拒绝读取，就叫人按 ⌘Q 完全退出再打开。"""
+    if not first:
+        return L("重查了一次，没有找到要读取的浏览器。", "Checked again. No browser to read was found.")
+    names = L("、", ", ").join(label(b) for b in first)
+    codes = set(first.values())
+    if codes == {OK}:
+        return L("现在能读取 {} 的数据了，读到了 TikTok 登录。",
+                 "The app can read {} data now and found a TikTok sign-in.").format(names)
+    if BLOCKED in codes:
+        blocked = L("、", ", ").join(label(b) for b, c in first.items() if c == BLOCKED)
+        return (L("系统仍然拒绝读取 {} 的数据。", "macOS still doesn’t allow the app to read {} data.").format(blocked)
+                + _space_before(quit_step(terminal))
+                + _space_before(L("重新打开后，「设置 > 启动自检」的「浏览器登录态」一行写着现在读到了什么。",
+                                  "After it reopens, the Browser Login row in Settings > Startup Check shows "
+                                  "what the app reads now.")))
+    sign_in = SAFARI_LOGIN_STEPS if list(first) == ["safari"] else _SIGN_IN_STEPS.format(names)
+    if codes <= {NOT_LOGGED_IN, NO_TIKTOK}:
+        # 读得到、里面看得出没有登录 cookie。READABLE（看不出登没登录）、NO_DATA（没找到 cookie 库）不能这么说
+        return (L("现在能读取 {} 的数据了，里面没有 TikTok 登录。",
+                  "The app can read {} data now, but there’s no TikTok sign-in in it.").format(names)
+                + _space_before(sign_in))
+    seen = L("重查了一次——{}。", "Checked again. {}.").format(observed_text(first))
+    if codes <= set(_SIGN_IN_CODES):
+        return seen + _space_before(sign_in)
+    return seen
 
 
 def browser_only_advice(login):
     """解析以 kind=browser_only 收场时，附在固定话术后面的那一段：两个借登录的层
     看到了什么、对应能做什么。没有观察（没试浏览器）返回空串。"""
+    return lookup_advice(login)
+
+
+def fda_needed(login, first=None):
+    """解析以 kind=browser_only 收场的那段话里带不带「完全磁盘访问权限」那几步。pipeline._fda_paths 按同一个判断
+    决定状态里带不带要加的路径：话里有那一步，页面才有地方放可复制的路径行。
+
+    系统拒绝读取（BLOCKED）了某个浏览器、又一个登录都没借到：带（一直如此）。借到了别的浏览器的登录（OK）：只在
+    登录优先那一步要读的浏览器（first，resolver._login_first_browsers）被拒时带。2026-10-29 新 Mac 上那三次解析：
+    登录优先那一层三次都没读到 Safari（系统拒绝读取），后面几层借到了 Chrome 的登录，话里却只说「已借用 Chrome 的
+    登录再试」，Safari 没读到这件事一个字没有；Safari 有了权限之后，同一房间第一层 791 毫秒就拿到了（一次观察，
+    不写成原因）。被拒的只是后面几层才读的浏览器、登录优先那一步读到了：不带，那几步帮不上这一步。first 不知道
+    （None）时只要有被拒的就带。"""
+    login = {b: c for b, c in (login or {}).items() if c != NOT_READ}
+    blocked = [b for b, c in login.items() if c == BLOCKED]
+    if not blocked:
+        return False
+    if OK not in login.values() or first is None:
+        return True
+    return any(b in first for b in blocked)
+
+
+_BORROWED = L("已借用 {} 里的 TikTok 登录再试，TikTok 仍然没有给出流地址。",
+              "Tried again with the TikTok sign-in from {}. TikTok still didn’t provide a stream URL.")
+
+
+def lookup_advice(login, first=None):
+    """browser_only_advice 的那一段，多知道一件事：first 是登录优先那一步要读的浏览器
+    （resolver._login_first_browsers，见 fda_needed），pipeline.browser_only_message 收场时给；不知道是 None。
+    借到了别的浏览器的登录、而 first 里的浏览器被系统拒绝读取时，照样留着它的观察和完全磁盘访问权限那几步。"""
     login = {b: c for b, c in (login or {}).items() if c != NOT_READ}
     if not login:
         return ""
     borrowed = [b for b, c in login.items() if c == OK]
-    # 英文开头留空格：这一段夹在 pipeline.browser_only_message 的两句之间，前一句以句号结尾
     if borrowed:
-        return L("已借用 {} 里的 TikTok 登录再试，TikTok 仍然没有给出流地址。",
-                 " Tried again with the TikTok sign-in from {}. TikTok still didn’t provide a "
-                 "stream URL.").format(L("、", ", ").join(label(b) for b in borrowed))
+        head = _BORROWED.format(L("、", ", ").join(label(b) for b in borrowed))
+        if not fda_needed(login, first):
+            # 英文开头留空格：这一段夹在 pipeline.browser_only_message 的两句之间，前一句以句号结尾
+            return _space_before(head)
+        # 借到了，可登录优先那一步要读的浏览器被系统拒绝读取：照实留着它的观察和完全磁盘访问权限那几步（分行，
+        # 前后都换行，同下面没借到时的写法）。只写看到的，不写「所以」
+        blocked = {b: c for b, c in login.items() if c == BLOCKED}
+        seen = L("借用浏览器里的 TikTok 登录时观察到——{}。",
+                 "Looked for a TikTok sign-in in your browsers. {}.").format(observed_text(blocked))
+        return _after_lead(head + _space_before(seen) + L("\n", "\n") + steps_text(blocked, lines=True)
+                           + L("\n", "\n"))
     # 英文只说「找过」：观察里可能一个登录都没读到。步骤为空（比如只有 READABLE）时英文不留尾部空格。
     # 步骤分了行（带「完全磁盘访问权限」那几步）时，观察那句和步骤之间也另起一行，最后也换行：pipeline 接在
     # 后面的「想现在就看：粘 .flv」是另一件事，接在权限范围或「在 Chrome 里登录」后面读起来像是同一件事（审查
