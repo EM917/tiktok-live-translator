@@ -48,7 +48,8 @@ BROWSER_ONLY_3_EN = (
     "TikTok doesn’t say why. Sometimes it works if you click Start again a little later. "
     "Sometimes it doesn’t work for the whole stream. "
     "To watch now, paste the live link and the .flv URL from your browser together, separated "
-    "by a space. A .flv URL usually works for about two weeks.")
+    "by a space. A .flv URL usually works for about two weeks. "
+    "You can also open this live stream in your browser to check whether the streamer is live.")
 
 
 def test_the_4003110_message_in_english_is_exactly_the_observed_facts_and_the_way_out():
@@ -104,11 +105,15 @@ def test_retry_banners_and_the_final_error_are_english_and_only_say_what_was_obs
         with pytest.raises(ResolveError) as caught:
             run(p._resolve_media(ROOM))
     banners = [i18n.render(d, EN) for s, d in server.statuses if s == "connecting"]
+    # 2026-10-29：等待那句后面补一件能做的事；每次重试开始前另说一句正在查第几次（一次约 40 秒）
+    tip = "Meanwhile, you can open this live stream in your browser to check whether the streamer is live."
     assert banners == [
         "TikTok didn’t provide a stream URL for this live stream. Retrying in 20 sec "
-        "(attempt 2 of 3)…",
+        "(attempt 2 of 3)… " + tip,
+        "Looking up the stream URL, attempt 2 of 3 (about 40 sec each)…",
         "TikTok didn’t provide a stream URL for this live stream. Retrying in 20 sec "
-        "(attempt 3 of 3)…"]
+        "(attempt 3 of 3)… " + tip,
+        "Looking up the stream URL, attempt 3 of 3 (about 40 sec each)…"]
     for text in banners:
         assert_rule8_clean(text)
     assert i18n.render(i18n.of(caught.value), EN) == BROWSER_ONLY_3_EN
@@ -273,7 +278,8 @@ def test_the_4003110_message_with_every_browser_observation(monkeypatch, login, 
                  "paste the live link and the .flv URL"):
         assert fact in text, (fact, text)
     assert "  " not in text and not _GLUED.search(text), text
-    assert text.endswith("A .flv URL usually works for about two weeks.")
+    assert text.endswith("A .flv URL usually works for about two weeks. You can also open this live stream "
+                         "in your browser to check whether the streamer is live.")
     assert i18n.render(advice, EN) in text
     if not {c for c in (login or {}).values() if c != bl.NOT_READ}:
         assert text == i18n.render(browser_only_message(retries, None), EN)

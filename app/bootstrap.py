@@ -29,6 +29,9 @@ main.py 在模块级就跑 ensure_env()，测试一 import 它就会被 execv �
   * 推迟安装（I7）：现有的 .venv 能跑、只是清单变了要跑 pip，而端口上已经有本程序在跑（它可能
     正用着这个 .venv），这次不装，等没有程序在跑时再装。这一轮刚建的 .venv、核心组件 import 不齐的
     .venv 不推迟：不装就起不来。
+  * 双击到窗口出来之间（2026-10-29）：第一跳起一个等 4 秒才弹的「正在启动」提示，exec 时不关、交给最终进程，
+    开好窗口再关；各段的时间点（第一跳开始、import 检查、pip、exec、后端就绪、窗口创建）写进这一次启动的
+    logs/bootstrap-*.log，只写中文。
 """
 import hashlib
 import json
@@ -36,6 +39,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -818,6 +822,153 @@ def new_log_path(root, kind, now=None, keep=KEEP_LOGS):
         return None
     stamp = datetime.fromtimestamp(time.time() if now is None else now).strftime("%Y%m%d-%H%M%S")
     return d / "{}-{}.log".format(kind, stamp)
+
+
+# ---- 双击到窗口出来之间：「正在启动」提示和各段的时间点 -----------------------------------------
+#
+# 2026-10-29 新 Mac 上从「聚焦搜索」点开 .app，半分钟到一分钟里什么窗口都没有，用户以为点了没反应。那天 pip
+# 本身不到一两秒，5 秒才弹的「正在补装」（REQUIREMENTS_DIALOG_DELAY_SEC）没机会出来；没有就绪指纹时的子进程
+# import 检查、exec 进 .app 之后的 import、起后端、等后端最多 60 秒再开窗口，这几段都没有任何提示。各段花了
+# 多久日志里也没记，那 30–60 秒花在哪儿查不出来。
+#
+# 现在：第一跳（启动器选的 Python、没有终端）一开始就起一个 osascript，它自己先等 LAUNCH_DIALOG_DELAY_SEC 秒
+# 再弹「正在启动」——启动快于这么久，窗口出来时它还没弹就被关掉了。exec 不关它：execve 不换 PID，osascript
+# 仍是最终进程的子进程；PID 放进环境变量（LAUNCH_DIALOG_ENV），最终进程开好窗口、或者要弹出错对话框之前，
+# 核对过确实是自己的 osascript 子进程再关（close_handed_dialog）。
+# 时间点写进这一次启动的 logs/bootstrap-*.log（pip 的输出也接在同一个文件里），文件路径和起点同样经环境变量
+# 带过 exec。终端、日志永远是中文（CLAUDE.md 第九条）。
+LAUNCH_DIALOG_DELAY_SEC = 4.0
+LAUNCH_DIALOG_GIVE_UP_SEC = 300     # 最终进程没能关它（比如半路崩了）时它自己消失
+LAUNCH_DIALOG_ENV = "TLT_LAUNCH_DIALOG_PID"
+LAUNCH_LOG_ENV = "TLT_LAUNCH_LOG"
+LAUNCH_T0_ENV = "TLT_LAUNCH_T0"
+LAUNCH_TEXT = L("正在启动 TikTok 直播同传，窗口准备好后会自己打开。",
+                "Starting TikTok Live Translator. The window opens on its own when it’s ready.")
+
+
+def launch_dialog_argv(lang=None):
+    """「正在启动」提示框的 osascript 参数：等 LAUNCH_DIALOG_DELAY_SEC 秒再弹，LAUNCH_DIALOG_GIVE_UP_SEC 秒后自己消失。"""
+    from . import native_dialog
+    return native_dialog.osascript_argv(LAUNCH_TEXT, button=native_dialog.INFO_BUTTON, icon="note",
+                                        giving_up=LAUNCH_DIALOG_GIVE_UP_SEC, lang=lang,
+                                        delay=LAUNCH_DIALOG_DELAY_SEC)
+
+
+def hand_off_dialog(pid, environ=None):
+    """exec 之前：把还开着的那个提示框的 PID 交给下一跳（None 表示没有，顺手清掉旧的）。"""
+    env = os.environ if environ is None else environ
+    if pid:
+        env[LAUNCH_DIALOG_ENV] = str(int(pid))
+    else:
+        env.pop(LAUNCH_DIALOG_ENV, None)
+
+
+def _parse_ps(text):
+    """`ps -o ppid=,comm= -p PID` 的输出 → (ppid, 命令)；读不出是 None。"""
+    parts = (text or "").strip().split(None, 1)
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]), parts[1].strip()
+    except ValueError:
+        return None
+
+
+def _ps_row(pid):
+    try:
+        out = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _parse_ps(out.stdout) if out.returncode == 0 else None
+
+
+def _reap(pid):
+    """收掉已经结束的子进程（不留僵尸进程）。最多等 1 秒：osascript 收到 SIGTERM 马上就退。"""
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            done, _status = os.waitpid(pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            return
+        if done or time.monotonic() >= deadline:
+            return
+        time.sleep(0.02)
+
+
+def close_handed_dialog(environ=None, own_pid=None, ps=_ps_row, kill=None, reap=_reap):
+    """最终进程关掉上一跳交过来的提示框。只关确实是自己子进程的 osascript（ppid 是本进程、命令名是
+    osascript；已经结束还没收的，ps 里命令名带括号也认）——PID 是从环境变量里读的，不核对就可能误杀别的进程。
+    环境变量读完就删：只关一次，也不传给之后起的子进程。返回是否关了。"""
+    env = os.environ if environ is None else environ
+    raw = env.pop(LAUNCH_DIALOG_ENV, None)
+    try:
+        pid = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    row = ps(pid)
+    own = os.getpid() if own_pid is None else own_pid
+    if row is None or row[0] != own or os.path.basename(row[1].strip("()")) != "osascript":
+        return False
+    try:
+        (kill or os.kill)(pid, signal.SIGTERM)
+    except OSError:
+        pass
+    reap(pid)
+    return True
+
+
+def start_launch_log(root, environ=None, now=None):
+    """第一跳一开始：建这一次启动的 logs/bootstrap-*.log，路径和起点放进环境变量，之后几跳接着写。
+    logs/ 建不了返回 None（只是没有时间点，不拦启动）。"""
+    env = os.environ if environ is None else environ
+    t0 = time.time() if now is None else now
+    path = new_log_path(root, "bootstrap", now=t0)
+    if path is None:
+        return None
+    env[LAUNCH_LOG_ENV] = str(path)
+    env[LAUNCH_T0_ENV] = repr(float(t0))
+    return path
+
+
+def launch_log_path(environ=None):
+    """这一次启动的日志文件（start_launch_log 建的）；没有是 None。pip 的输出接在同一个文件里。"""
+    env = os.environ if environ is None else environ
+    raw = env.get(LAUNCH_LOG_ENV)
+    return Path(raw) if raw else None
+
+
+def launch_line(event, at, t0):
+    """一行时间点：「[启动计时] 13:26:32.123 +0.0 秒 第一跳开始」。只写中文（终端和日志永远是中文）。"""
+    clock = datetime.fromtimestamp(at).strftime("%H:%M:%S.%f")[:-3]
+    return "[启动计时] {} +{:.1f} 秒 {}".format(clock, max(0.0, at - t0), event)  # i18n: terminal
+
+
+def launch_mark(event, environ=None, now=None):
+    """记一个时间点（追加到这一次启动的日志里）。没有日志、写不进去都不出声：时间点不能拦启动。
+    返回写下的那一行，没写是 None。"""
+    env = os.environ if environ is None else environ
+    path = launch_log_path(env)
+    if path is None:
+        return None
+    at = time.time() if now is None else now
+    t0 = _as_float(env.get(LAUNCH_T0_ENV))
+    line = launch_line(event, at, at if t0 is None else t0)
+    try:
+        with open(str(path), "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        return None
+    return line
+
+
+def end_launch(environ=None):
+    """窗口开好了：这一次启动到此为止。之后一键更新重启、起子进程都不再往这个日志里写。"""
+    env = os.environ if environ is None else environ
+    env.pop(LAUNCH_LOG_ENV, None)
+    env.pop(LAUNCH_T0_ENV, None)
 
 
 def run_logged(cmd, log_path=None, echo=True, popen=subprocess.Popen):

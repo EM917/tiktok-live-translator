@@ -93,7 +93,12 @@ not come out of decryption; start again and, if a Keychain dialog asks for
 
 <a id="code-4003110"></a>**"TikTok didn't provide a stream URL for this live stream (code 4003110)."**
 That code is TikTok's generic refusal; the response carries no reason, and the
-app does not invent one. Before concluding anything, run the built-in check:
+app does not invent one. The app retries up to three times, each lookup taking
+about 40 seconds, and the page says which attempt is running. Meanwhile, open
+the live stream in your browser to check whether the streamer is live. If the
+message also says the lookup couldn't read the TikTok sign-in from Safari, the
+Full Disk Access steps are in the notice at the top. Before concluding anything,
+run the built-in check:
 
 ```bash
 python3 tools/diagnose_room.py @streamer --history-only   # your own logs only, no requests
@@ -112,7 +117,11 @@ two weeks.
 
 **The first start appears stuck downloading the recognition model.** The model
 is being retrieved from Hugging Face (large-v3 is approximately 3 GB). Progress
-is displayed on the page and this occurs only once.
+is displayed on the page and this occurs only once. To avoid the wait during a
+live stream, download it beforehand: click Download Now below the input field on
+the home page (the same button is on the Speech Recognition row in Settings →
+Startup Check). The button appears only while the model is missing and is
+unavailable while connecting or live.
 
 **All translations fail and captions show only the source language.** Google's
 free endpoint, which `auto` uses when no local model is installed,
@@ -281,6 +290,14 @@ phone page or the Floating Window. To switch off the risk flags, the audio clips
 together, start the app with `TLT_ASR_SAFEGUARDS=off`; the numbers stay in the audit log. To roll back the code, revert the commits that added `app/asr_risk.py`,
 `app/asr_evidence.py` and the badge; no other code reads the new audit keys, and deleting
 `logs/asr-evidence/` has no effect on the app.
+
+**Opening the app showed a different copy.** If the app is already running, opening it again
+(from this folder or from another one) doesn't start a second copy: the window opens on the
+running one. When the running copy isn't the one in the folder you opened, for example an older
+version you downloaded earlier is still open, the app says so, with that copy's version: in a
+dialog when you opened TikTok Live Translator.app, in the terminal window otherwise. To use the one
+in this folder, quit the running copy first, then open this one again. Copies from before this
+message existed (0.19.0 and earlier) don't report their folder, and the message says that instead.
 
 **The interface is not on port 8765.** If 8765 is occupied, the app
 moves to the next free port in 8766–8774 and says so in the terminal. That's

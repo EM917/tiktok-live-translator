@@ -375,10 +375,17 @@ def test_every_selfcheck_row_reads_as_english(scenario, monkeypatch, tmp_path):
             assert not CJK.search(en[key]), (scenario, key, en[key])
             assert not UNFILLED.search(en[key]), (scenario, key, en[key])
             assert "  " not in en[key].strip(), (scenario, key, en[key])    # 拼接处没有多空格
-        # recheck：「浏览器登录态」那一行带「完全磁盘访问权限」那几步时多出来的布尔键（页面画「我加好了，再查一次」），
-        # 不是文字，英文界面上不用换
-        assert set(en) - {"recheck"} == {"name", "level", "detail", "fix"} and en["level"] == row["level"]
-        assert en.get("recheck", True) is True and ("recheck" not in en or scenario == "browser_login")
+        # 两种行多带键，别的行、别的情况都只有这四个键：
+        # - recheck：「浏览器登录态」那一行带「完全磁盘访问权限」那几步时多出来的布尔键（页面画「我加好了，再查一次」），
+        #   不是文字，英文界面上不用换
+        # - action / size_mb / busy：「语音识别」一行模型还没下全时多带「现在下载」那一下（app/selfcheck.py _check）
+        extra = set(en) - {"name", "level", "detail", "fix"}
+        assert extra in (set(), {"recheck"}, {"action", "size_mb", "busy"}) and en["level"] == row["level"]
+        if extra == {"recheck"}:
+            assert en["recheck"] is True and scenario == "browser_login"
+        elif extra:
+            assert en["action"] == selfcheck.ACTION_DOWNLOAD_ASR and en["name"] == "Speech Recognition"
+            assert en["level"] == selfcheck.WARN
 
 
 def test_the_twelve_row_names_follow_the_glossary():
@@ -418,7 +425,7 @@ def test_manual_install_command_follows_the_note_in_english_order(monkeypatch, t
     assert row["fix"] == NOTE + "。也可以停播后" + cmd + "，装好后重开程序"
     assert i18n.text(row["detail"], i18n.EN) == (
         "This Mac supports GPU acceleration, but recognition is running on the CPU: ct2 + "
-        "large-v3-turbo (model downloads when you first click Start). That’s more than twice as "
+        "large-v3-turbo (model not downloaded yet, about 1.6 GB). That’s more than twice as "
         "slow, and long sessions tend to build a backlog.")
 
 
@@ -493,13 +500,13 @@ def test_a_rosetta_python_gets_its_own_asr_row(monkeypatch, tmp_path):
     row = rows[0]
     assert row["level"] == selfcheck.WARN
     assert row["detail"] == ("这台 Mac 是 Apple 芯片，但程序在用 Intel 版的 Python（经 Rosetta 转译运行），"
-                             "识别只能用 CPU（ct2 + large-v3-turbo（首次开播需先下载模型））"
+                             "识别只能用 CPU（ct2 + large-v3-turbo（模型还没下载，约 1.6 GB））"
                              "——慢，长时间监听容易积压")
     english = i18n.text(row["detail"], i18n.EN)
     assert english == (
         "This Mac has Apple silicon, but the app is running on an Intel version of Python "
         "(translated by Rosetta), so recognition can only run on the CPU: ct2 + large-v3-turbo "
-        "(model downloads when you first click Start). It’s slow, and long sessions tend to build "
+        "(model not downloaded yet, about 1.6 GB). It’s slow, and long sessions tend to build "
         "a backlog.")
     assert "较小" not in row["detail"] and "smaller" not in english
     # Rosetta 只在 macOS 上：步骤带「完全磁盘访问权限」那一句
