@@ -6,7 +6,7 @@ globalThis.UI_LANG = "en";   // 必须在 require 之前：web/i18n.js 加载时
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { SAMPLE, NOW, makeFlashDoc, makeEls, product, st } from "./flash-fixtures.mjs";
+import { SAMPLE, NOW, makeFlashDoc, makeEls, product, st, AUTO_RENEW_OFF, autoRenewProduct } from "./flash-fixtures.mjs";
 
 const require = createRequire(import.meta.url);
 const F = require("../web/flash.js");
@@ -81,6 +81,24 @@ test("主句：连不上、读不出、陈旧（带本机时刻）、卡住和�
   assert.deepEqual(lines(calm({ page: "maintenance", running: false, paused_reason: null })), ["Page status: maintenance"]);
   assert.deepEqual(lines(calm({ paused_reason: "cooldown", attention: ["paused"] })), ["Paused: cooldown"]);
   assert.deepEqual(lines(calm({ products: [], alerts: [] })), ["No products in the list yet."]);
+});
+
+test("Auto-renew off：checked 为准，没有或读不出才看 enabled；中文那边同一张表", () => {
+  assert.ok(AUTO_RENEW_OFF.length >= 9);
+  for (const c of AUTO_RENEW_OFF) {
+    const p = autoRenewProduct(c.fields);
+    assert.equal(F.flashAutoRenewOff(p), c.off, c.why);
+    assert.deepEqual(F.flashProductParts(p, {}, NOW).detail, c.off ? ["Auto-renew off"] : [], c.why);
+  }
+});
+
+test("checked 不碰卡住和等续开：英文同样只认 enabled", () => {
+  const running = { running: true, paused_reason: null };
+  const quiet = product("stopped", { checked: true, enabled: false });
+  assert.equal(F.flashWaitingRenewal(quiet, running), false);
+  assert.deepEqual(F.flashProductParts(quiet, running, NOW).detail, []);
+  const odd = product("stopped", { checked: false, enabled: true });
+  assert.deepEqual(F.flashProductParts(odd, running, NOW).detail, ["Waiting for Flash Sale Helper to renew", "Auto-renew off"]);
 });
 
 test("商品行和摘要：倒计时、轮次、库存、续开次数分单复数", () => {

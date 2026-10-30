@@ -368,6 +368,7 @@ function flashLineText(line) {
  * 闪购助手在运行、没暂停（后端从这时起计 60 秒，到点标 stuck）。
  * 条件和后端 app/flash_sale.stuck_candidate 一字不差：enabled 只认 true。enabled 读不出（null）的商品后端永远不算卡住，
  * 这里要是写「等续开」，那句话就会一直挂着、60 秒后也不会变成「停了超过 1 分钟」。
+ * checked（闪购助手 0.10.0 起）不参与，它只管「不自动续开」那句话（flashAutoRenewOff）。
  * tests/fixtures/flash_sale/shared-rules.json 的 waiting_renewal 两边各测一遍 */
 function flashWaitingRenewal(p, st) {
   return !!p && p.state === "stopped" && p.enabled === true && p.skip == null &&
@@ -375,7 +376,7 @@ function flashWaitingRenewal(p, st) {
 }
 
 /* 排序的先后（数小的在前），和后端 app/flash_sale.py 的 _rank 同一张表：要人看的排前面——卡住的（停着、该续开、
- * 连续 60 秒没续开）第一，然后待开始、看不准；其次进行中、两轮之间；再其次还在续开计时里的、不自动续开的已停止
+ * 连续 60 秒没续开）第一，然后待开始、看不准；其次进行中、两轮之间；再其次还在续开计时里的、enabled 不是 true 的已停止
  * （续开实测 2–40 秒，排在前面会在列表顶上一闪一闪），没有闪购、手动结束；认不出的状态最后。
  * st 不参与排序（卡住与否后端已经算进 stuck），留着参数是给以后按整体状态排的余地 */
 function flashRank(p) {
@@ -455,6 +456,18 @@ function flashInt(v) {
   return v != null && typeof v !== "boolean" && isFinite(n) ? Math.round(n) : null;
 }
 
+/* 那一行写不写「不自动续开」。闪购助手 0.10.0 起 enabled 不再等于面板上的勾：主播没动过、还没闪购（或没运行时已停）的商品，
+ * 面板上打着勾、有闪购时会自动加入，enabled 却是 false，主播真取消勾选的也是 false。只看 enabled 就会把没动过的商品都写成
+ * 「不自动续开」，这是错话。所以 0.10.0 起看新键 checked（面板上的勾现在画成什么样）：false 就写（哪怕 enabled 是 true），
+ * true 就不写（哪怕 enabled 是 false）。0.9.x 没有这个键，后端规整成 null；没有、null、不是布尔都退回老规则，enabled 是 false
+ * 才写，0.9.x 的显示一字不变。
+ * 只有这句话看 checked：卡住、等续开（flashWaitingRenewal，后端 stuck_candidate）和排序照旧只认 enabled */
+function flashAutoRenewOff(p) {
+  if (p && p.checked === false) return true;
+  if (p && p.checked === true) return false;
+  return !!p && p.enabled === false;
+}
+
 /* 一个商品的一行：{title, position, state: {text, code, tone}, detail: [文字 | {countdown: kind, at} | {text, code}]}。
  * 倒计时那一截带时刻，渲染成单独的 span，每秒只改它的字；{text, code} 是文字接一段原样的代码（认不出的不续开原因）。
  * position 是卡片序号（标题前写 #12），没有就是 null。闪购助手说了故意不续开（skip）的，原因写在细节的最前面 */
@@ -485,7 +498,7 @@ function flashProductParts(p, st, now) {
   if (renewals != null && renewals >= 1) {
     detail.push(LN(renewals, "续开 " + renewals + " 次", "Renewed once", "Renewed " + renewals + " times"));
   }
-  if (p && p.enabled === false) detail.push(L("不自动续开", "Auto-renew off"));
+  if (flashAutoRenewOff(p)) detail.push(L("不自动续开", "Auto-renew off"));
   var title = typeof (p && p.title) === "string" && p.title ? p.title : (p && p.id != null ? String(p.id) : "");
   var position = flashPosition(p);
   return { title: title, position: position != null && position >= 0 ? position : null, state: state, detail: detail };
@@ -1002,7 +1015,7 @@ if (typeof module !== "undefined" && module.exports) {
     flashCountdown, flashClock, flashCountdownText,
     flashIsProblem, flashIsNewer, flashUnread, flashSeenMark, flashParseSeen,
     flashNeedsAttention, flashChip, flashButtonState, flashLines, flashLineText,
-    flashWaitingRenewal, flashRank, flashPosition, flashSortProducts, flashSummaryParts, flashSummary, flashProductParts,
+    flashWaitingRenewal, flashRank, flashPosition, flashSortProducts, flashSummaryParts, flashSummary, flashAutoRenewOff, flashProductParts,
     flashRowsToShow, flashMoreText, flashAlertsToShow,
     flashVersionParts, flashVersionOlder, flashControlTooOld, flashControlDone, flashActiveControl, flashStarting, flashStartingText,
     flashWaitingText, flashNotReadyNote, flashRetryingNote, flashNotFoundNote, flashControlView, flashStartClick, flashNewArmId, flashOwnErrorText,

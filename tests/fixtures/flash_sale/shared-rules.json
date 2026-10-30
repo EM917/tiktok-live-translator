@@ -28,6 +28,12 @@
     {"why": "关了自动续开",
      "product": {"id": "1000000000000000003", "state": "stopped", "enabled": false, "skip": null},
      "state": {"running": true, "paused_reason": null}, "expect": false},
+    {"why": "闪购助手 0.10.0：没动过、还没闪购的商品，面板上打勾（checked=true）但 enabled=false：只认 enabled，不等续开",
+     "product": {"id": "1000000000000000003", "state": "stopped", "enabled": false, "checked": true, "skip": null},
+     "state": {"running": true, "paused_reason": null}, "expect": false},
+    {"why": "只认 enabled：checked=false 也照样等续开（checked 只管「不自动续开」那句话）",
+     "product": {"id": "1000000000000000003", "state": "stopped", "enabled": true, "checked": false, "skip": null},
+     "state": {"running": true, "paused_reason": null}, "expect": true},
     {"why": "enabled 读不出：只认 true",
      "product": {"id": "1000000000000000003", "state": "stopped", "enabled": null, "skip": null},
      "state": {"running": true, "paused_reason": null}, "expect": false},
@@ -151,6 +157,13 @@
        {"id": "p3", "state": "live", "stuck": false, "position": null},
        {"id": "p4", "state": "pending", "stuck": false, "position": null}
      ],
-     "ids": ["p2", "p4", "p1", "p3"]}
+     "ids": ["p2", "p4", "p1", "p3"]},
+    {"why": "闪购助手 0.10.0 起的 checked 不参与排序：同一档照样按 position",
+     "products": [
+       {"id": "c1", "state": "stopped", "stuck": false, "position": 3, "enabled": false, "checked": true},
+       {"id": "c2", "state": "stopped", "stuck": false, "position": 1, "enabled": true, "checked": false},
+       {"id": "c3", "state": "live", "stuck": false, "position": 9, "enabled": true, "checked": false}
+     ],
+     "ids": ["c3", "c2", "c1"]}
   ]
 }
