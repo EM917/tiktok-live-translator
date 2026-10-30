@@ -1,7 +1,8 @@
 // i18n: done
 /* 直播中界面几处「显示什么」的纯逻辑（web/live-ui.js）：顶栏手机同看按钮的文案、
  * 字幕区中间的连接中 / 下载模型 / 等待第一句提示、提示条的图标与文字、顶栏浮层的水平位置、报警分级标签、「回到最新」按钮上的未读条数，以及底部大字幕的
- * 翻译状态角标、「语音识别不确定」角标、「约 N 秒前」、字幕字号的比例，还有顶栏「字幕译成」下拉要补哪一项。
+ * 翻译状态角标、「语音识别不确定」角标、「约 N 秒前」、字幕字号的比例，还有顶栏「字幕译成」下拉要补哪一项、
+ * 选了哪一项时要就地提示「这是字幕，不是界面语言」。
  * 这些判断本身不碰 DOM，放进 app.js 的立即执行函数就没法被 node 测试 require
  * （同 web/settings-rows.js 的起因）。写法和加载方式照 web/switch.js：浏览器里
  * 是全局函数，Node 测试环境走 module.exports。 */
@@ -292,6 +293,19 @@ function targetLangExtra(code) {
   return { value: value, text: known ? TARGET_LANG_OTHER_NAMES[value] : value };
 }
 
+/* 「字幕译成」下拉刚被这一页的人换成了另一种界面语言：英文界面选了中文（简体或繁体），或者中文界面选了 English。
+ * 2026-10-29 用户在英文界面里想切回中文，点的就是这个下拉：连接中、默认 1000px 的窗口里标签被省掉（style.css
+ * ≤1080px 那一段），顶栏只剩一个写着「中文（简体）」的下拉；选了它只改了字幕目标，当时没在播，什么都看不出来，
+ * 以为「没反应」。和 10-20 是同一种误会（docs/i18n-style.md §1.3「字幕译成」那一行）。
+ * 返回那种界面语言（"zh" / "en"），app.js 在下拉下面弹一个小浮层，给一颗切换界面的按钮；不像是这种误会时返回 null。
+ * uiLang 是本页的界面语言（i18n.js 的 UI_LANG），不是 "en" 的一律按中文算（同 settings-rows.js langReload）。
+ * 西语、四种以外的语言、和本页同一种语言都不提示：那些不会被读成「我要换界面」 */
+function captionsLangHint(uiLang, value) {
+  var v = value == null ? "" : String(value);
+  if (uiLang === "en") return v === "zh-CN" || v === "zh-TW" ? "zh" : null;
+  return v === "en" ? "en" : null;
+}
+
 /* 该写到 <html> 上的 CSS 变量：大字幕的字号和卡片/弹幕的比例 */
 function captionSizeVars(size) {
   var n = Math.round(Number(size));
@@ -312,5 +326,6 @@ if (typeof module !== "undefined" && module.exports) {
                      CAPTION_LAG_SHOW_SEC: CAPTION_LAG_SHOW_SEC,
                      captionScale: captionScale, captionSizeVars: captionSizeVars,
                      captionSizeFromConfig: captionSizeFromConfig,
-                     TARGET_LANGS: TARGET_LANGS, targetLangExtra: targetLangExtra };
+                     TARGET_LANGS: TARGET_LANGS, targetLangExtra: targetLangExtra,
+                     captionsLangHint: captionsLangHint };
 }

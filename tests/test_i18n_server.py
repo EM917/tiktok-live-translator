@@ -310,6 +310,61 @@ def test_switching_the_ui_language_saves_it_and_broadcasts_the_language_fields(m
     assert capsys.readouterr().out == "[信息] 界面语言：en → en\n"     # 终端永远是中文
 
 
+def test_switching_the_ui_language_while_live_leaves_the_session_and_the_reconnect_replays_it(monkeypatch):
+    """用户 2026-10-29 定：连接中、直播中也能切界面语言（「字幕译成」就地提示里的按钮）。_set_ui_lang 不看
+    状态、不碰监听：状态还是直播中，字幕、报警、弹幕的缓存一条不少、同一批对象。页面重载就是断开再连上：
+    重连拿到的 hello 和回放按新语言渲染，报警、字幕、弹幕全部回放，数据字段和切换前一模一样。"""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+
+    async def connect(server):
+        app = web.Application()
+        app.router.add_get("/ws", server._ws)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            ws = await client.ws_connect("/ws")
+            got = [await ws.receive_json(timeout=5) for _ in range(4)]
+            await ws.close()
+            return got
+        finally:
+            await client.close()
+
+    async def scenario():
+        from app.pipeline import Pipeline
+
+        server = CaptionServer(port=0)
+        server.config.update(i18n.config_info())
+        await _broadcast_samples(server)          # 没有页面连着：只进缓存
+        await server.status("live", "")
+        zh = await connect(server)
+        caches = (list(server.history), list(server.alerts), list(server.comments))
+        p = Pipeline.__new__(Pipeline)
+        p.server = server
+        saved = {}
+        monkeypatch.setattr(p, "_save_setting", lambda k, v: saved.__setitem__(k, v), raising=False)
+        await p.handle_control({"type": "set_ui_lang", "value": "en"})
+        assert saved == {"ui_lang": "en"}
+        assert server.config["status"]["state"] == "live"
+        after = (list(server.history), list(server.alerts), list(server.comments))
+        assert [[id(m) for m in c] for c in after] == [[id(m) for m in c] for c in caches]
+        en = await connect(server)
+        return zh, en
+
+    zh, en = asyncio.run(scenario())
+    hello, alert, caption, comment = en
+    assert hello["type"] == "hello"
+    assert hello["config"]["status"]["state"] == "live"
+    assert hello["config"]["ui_lang"] == "en" and hello["config"]["ui_lang_setting"] == "en"
+    assert zh[0]["config"]["ui_lang"] == "zh"
+    assert (alert["type"], alert["alert_id"], alert["why"], alert["replay"]) == ("alert", 7, "Timed out", True)
+    assert (caption["type"], caption["id"], caption["why"], caption["restore"]) == ("caption", 3, "Timed out", True)
+    assert comment == zh[3] and comment["replay"] is True
+    for before, now in zip(zh[1:3], en[1:3]):
+        assert {k: v for k, v in before.items() if k != "why"} == {k: v for k, v in now.items() if k != "why"}
+
+
 # ---- G9 运行时网 ------------------------------------------------------------------------
 
 PRODUCER = "/nowhere/app/producer.py"        # 不在 tests/ 下：算生产代码发出的消息
