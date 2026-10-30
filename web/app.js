@@ -3303,7 +3303,8 @@
       delete incidents[msg.id];
     } else {
       incidents[msg.id] = { level: msg.level || "warn", text: msg.text || "",
-                            since: msg.since || msg.ts || 0, ts: msg.ts, recheck: !!msg.recheck };
+                            since: msg.since || msg.ts || 0, ts: msg.ts, recheck: !!msg.recheck,
+                            fda: msg.fda || null };
     }
     drawIncidents();
   }
@@ -3350,6 +3351,58 @@
     if (sendRecheck(true)) leftWithRecheck = false;
   }
 
+  // 「完全磁盘访问权限」那几步旁边的按钮（app/browser_login.py fda_button_lines、fda_open_argvs；app/pipeline.py
+  // _open_fda）。2026-10-29 用户照着黄条的文字做不下来，是我们替他打开了那一页、在访达里选中了解释器，他拖进去才
+  // 成功。「没有读到 TikTok 登录」那条和自检「浏览器登录态」那一行带 fda（{settings|python|terminal: 那一步的那一行
+  // 字}）时，按钮接在那一行后面：哪一行只按 fda 给的字整行比对（同 pathOfLine），不从文字里猜；比不上的接在最后，
+  // 不丢。fda 只在 macOS 上带，「终端」那一个只在从终端启动时带；表外的键不画。点了只发类型，不带任何路径或参数：
+  // argv 在后端写死。按钮名和后端第 1、2 步里叫人去点的名字是同一套（browser_login.FDA_BUTTON_LABELS）
+  var FDA_BUTTONS = [
+    { key: "settings", type: "open_fda_settings" },
+    { key: "python", type: "reveal_python" },
+    { key: "terminal", type: "reveal_terminal" },
+  ];
+
+  function fdaLabel(key) {
+    if (key === "settings") return L("打开完全磁盘访问设置", "Open Full Disk Access Settings");
+    if (key === "python") return L("在访达里选中 Python", "Show Python in Finder");
+    return L("在访达里选中终端", "Show Terminal in Finder");
+  }
+
+  function fdaButton(item, cls) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = cls;
+    btn.textContent = fdaLabel(item.key);
+    btn.addEventListener("click", function () { send({ type: item.type }); });
+    return btn;
+  }
+
+  // fda 里认得的那几项（按 FDA_BUTTONS 的顺序）：[{key, type, line}]。fda 不是对象、或一项都不认得时是空的
+  function fdaItems(fda) {
+    if (!fda || typeof fda !== "object") return [];
+    return FDA_BUTTONS.filter(function (b) { return typeof fda[b.key] === "string" && fda[b.key].trim(); })
+                      .map(function (b) { return { key: b.key, type: b.type, line: fda[b.key].trim() }; });
+  }
+
+  // 把几行字一行一行画进 el（el 是 pre-line：行之间是换行），fda 给了的那一行后面接上它的按钮。lead 为真时第一行
+  // 前面也换行（折起来的那几行接在第一行后面）。没有 fda 时和整段 textContent 一字不差
+  function drawFdaLines(el, lines, fda, cls, lead) {
+    var items = fdaItems(fda);
+    var placed = {};
+    lines.forEach(function (line, i) {
+      el.appendChild(document.createTextNode((i > 0 || lead ? "\n" : "") + line));
+      items.forEach(function (item) {
+        if (placed[item.key] || item.line !== line.trim()) return;
+        placed[item.key] = true;
+        el.appendChild(fdaButton(item, cls));
+      });
+    });
+    items.forEach(function (item) {
+      if (!placed[item.key]) el.appendChild(fdaButton(item, cls));
+    });
+  }
+
   window.addEventListener("blur", leaveWindow);
   window.addEventListener("focus", backToWindow);
   document.addEventListener("visibilitychange", function () {
@@ -3375,18 +3428,23 @@
   // 折起来。按钮就地切换，不重画（键盘焦点留在按钮上）
   var incidentOpen = Object.create(null);   // id → 展开时的那段文字
 
-  function foldIncident(span, id, text) {
+  // fda：「完全磁盘访问权限」那几步旁边的按钮跟在哪几行后面（drawFdaLines）
+  function foldIncident(span, id, text, fda) {
     var lines = String(text).split("\n").map(function (s) { return s.trim(); })
                             .filter(function (s) { return s; });
     if (!span || lines.length <= BANNER_FOLD_LINES) {
       delete incidentOpen[id];
+      if (span && fdaItems(fda).length) {
+        span.textContent = "";
+        drawFdaLines(span, lines, fda, "incident-fda", false);
+      }
       return;
     }
     if (incidentOpen[id] !== undefined && incidentOpen[id] !== text) delete incidentOpen[id];
     span.textContent = lines[0];
     var rest = document.createElement("span");
     rest.className = "incident-rest";
-    rest.textContent = "\n" + lines.slice(1).join("\n");      // .incident > span 是 pre-line：照着换行
+    drawFdaLines(rest, lines.slice(1), fda, "incident-fda", true);   // .incident > span 是 pre-line：照着换行
     var more = document.createElement("button");
     more.type = "button";
     more.className = "banner-more";
@@ -3420,7 +3478,7 @@
       // 当数据，不当 HTML；开头自带的 🔴⚠️ 换成按级别画的图标
       var text = stripStatusEmoji(incidents[k].text);
       setIconText(row, barIconFor(level), text);
-      foldIncident(row.lastChild, k, text);
+      foldIncident(row.lastChild, k, text, incidents[k].fda);
       if (incidents[k].recheck) {
         // 接在第一行的字（和「显示全部步骤」）后面：折着时也看得见
         var span = row.lastChild;
@@ -4520,7 +4578,12 @@
       if (c.fix) {
         var fix = document.createElement("span");
         fix.className = "sc-fix";
-        fix.textContent = c.fix;   // 不再拼「→」：这不是链接，没法点（designer.md #1）
+        if (fdaItems(c.fda).length) {
+          // 「完全磁盘访问权限」那几步旁边的按钮，接在 fda 给的那几行后面（drawFdaLines）
+          drawFdaLines(fix, String(c.fix).split("\n"), c.fda, "btn small sc-fda", false);
+        } else {
+          fix.textContent = c.fix;   // 不再拼「→」：这不是链接，没法点（designer.md #1）
+        }
         if (c.recheck) fix.appendChild(recheckButton("btn small sc-recheck"));   // 「我加好了，再查一次」，在那几步下面
         detail.appendChild(fix);
       }

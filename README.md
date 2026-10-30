@@ -219,11 +219,13 @@ Matching runs on the recognized Spanish text, so an alert does not wait for the 
 
 **A Startup Check row is red.** Open Settings → Startup Check. Each row shows its fix underneath, and a failing check stays in a banner at the top of the window until a later check passes. A common cause is an incomplete noise-reduction model: delete `models/bd.rnnn` and start again.
 
-**The notice at the top, or the Browser Login row, says macOS did not allow access.** Only streams where TikTok gives the stream URL to signed-in viewers need this step. macOS wants Full Disk Access for the Python interpreter, not for the app. The notice at the top of the window (it appears after you click Start) shows the path to add, and so does the Browser Login row in Settings → Startup Check when no browser has a TikTok sign-in.
+**The notice at the top, or the Browser Login row, says macOS did not allow access.** Only streams where TikTok gives the stream URL to signed-in viewers need this step. macOS wants Full Disk Access for the Python interpreter, not for the app. The notice at the top of the window (it appears after you click Start) shows the path to add, and so does the Browser Login row in Settings → Startup Check when no browser has a TikTok sign-in. On a Mac, click **Show All Steps** on the notice: steps 1 and 2 each have a button.
 
-1. Open System Settings → Privacy & Security → Full Disk Access.
-2. Click +. In the file window press ⌘⇧G, paste the path, press Return, click Open, and turn its switch on. It is listed as `python3.x`, not under the app's name. Repeat for each path shown. Only if you started the app from a terminal (for example with `Start.command`): add Terminal the same way, its path is `/System/Applications/Utilities/Terminal.app`.
+1. Click **Open Full Disk Access Settings**. It opens System Settings → Privacy & Security → Full Disk Access.
+2. Click **Show Python in Finder**, drag the selected file into the list, and turn its switch on. It is listed as `python3.x`, not under the app's name. Do this for each path shown. Only if you started the app from a terminal (for example with `Start.command`): click **Show Terminal in Finder** and drag Terminal into the list too.
 3. Press ⌘Q to quit the app completely and open it again. If you started it from a terminal and macOS asks to quit and reopen Terminal, do that, then start the app again.
+
+The buttons only open System Settings and Finder. The app never changes the setting itself. If a button says it couldn't open, or dragging doesn't work, add the file by hand: in the Full Disk Access list click +, press ⌘⇧G in the file window, paste the path from the notice, press Return, click Open, and turn its switch on. Terminal's path is `/System/Applications/Utilities/Terminal.app`.
 
 After step 2 you can click **Check Again** on the notice or on the Browser Login row: the app looks again right away and says whether it can read Safari now, or whether you still need step 3. When the notice is showing, switching back to the app window does the same.
 
@@ -538,11 +540,13 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 **「启动自检」有一行是红的。** 打开「设置 → 启动自检」，每一行下面写着怎么处理。没处理好的项会一直在窗口顶部显示提示，直到下一次自检通过。常见的原因是降噪模型没下载完整：删掉 `models/bd.rnnn`，再启动一次。
 
-**窗口顶部的提示或「浏览器登录态」说系统拒绝读取。** 只有 TikTok 要登录才给流地址的直播间需要这一步。要加进「完全磁盘访问权限」的是 Python 解释器，不是程序本身。窗口顶部那条提示（点「开始翻译」后出现）里有要加的路径；没有哪个浏览器读到 TikTok 登录时，「设置 → 启动自检」里「浏览器登录态」那一行也有。
+**窗口顶部的提示或「浏览器登录态」说系统拒绝读取。** 只有 TikTok 要登录才给流地址的直播间需要这一步。要加进「完全磁盘访问权限」的是 Python 解释器，不是程序本身。窗口顶部那条提示（点「开始翻译」后出现）里有要加的路径；没有哪个浏览器读到 TikTok 登录时，「设置 → 启动自检」里「浏览器登录态」那一行也有。在 Mac 上点提示里的「**显示全部步骤**」，第 1、2 步旁边各有一个按钮。
 
-1. 打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」。
-2. 点「+」，在选文件的窗口里按 ⌘⇧G，粘贴路径，按回车，点「打开」，再打开它的开关。列表里它叫 `python3.x`。给出几个路径就各加一遍。只有从终端启动程序时（比如双击 `Start.command`）：「终端」也照这样加进去，它的路径是 `/System/Applications/Utilities/Terminal.app`。
+1. 点「**打开完全磁盘访问设置**」，会打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」。
+2. 点「**在访达里选中 Python**」，把访达里选中的文件拖进那个列表，再打开它的开关。列表里它叫 `python3.x`。给出几个路径就各做一遍。只有从终端启动程序时（比如双击 `Start.command`）：再点「**在访达里选中终端**」，把「终端」也拖进列表。
 3. 按 ⌘Q 完全退出程序，再打开。从终端启动的，系统要「终端」退出并重新打开时照做，再启动程序。
+
+这几个按钮只打开「系统设置」和访达，程序绝不自己改这项设置。按钮说没能打开，或者拖不进去时，手动加：在「完全磁盘访问权限」的列表下面点「+」，在选文件的窗口里按 ⌘⇧G，粘贴提示里的路径，按回车，点「打开」，再打开它的开关。「终端」的路径是 `/System/Applications/Utilities/Terminal.app`。
 
 做完第 2 步，可以点提示或「浏览器登录态」那一行上的「**我加好了，再查一次**」：程序当场再看一次，告诉你现在能不能读取 Safari，还是要做第 3 步。提示挂着时，切回程序窗口也会自动查一次。
 

@@ -617,17 +617,22 @@ def test_selfcheck_row_when_the_system_refuses(monkeypatch, tmp_path):
     assert row["level"] == "warn"
     assert "Chrome：系统拒绝读取；Safari：系统拒绝读取" in row["detail"]
     # 编号的三步、路径各占一行，后面是「删掉再做一次第 2 步」和权限范围（专家审查 I8、S2；2026-10-29 缩成三步）；
-    # 自检那一行按换行显示（.sc-fix pre-line）
+    # 自检那一行按换行显示（.sc-fix pre-line）。macOS 上第 1、2 步按那几步旁边的按钮写（「打开完全磁盘访问设置」
+    # 「在访达里选中 Python」），fda 记着按钮跟在哪两行后面
     assert row["fix"] == (
         "系统不允许本程序读取浏览器数据。照下面三步给 Python 打开「完全磁盘访问权限」：\n"
-        "1. 打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。\n"
-        "2. 点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开"
-        "（每个路径各做一遍）：\n「/opt/homebrew/Cellar/python@3.14/3.14.7/bin/python3.14」\n"
+        "1. 点「打开完全磁盘访问设置」，会打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。\n"
+        "2. 点「在访达里选中 Python」，把访达里选中的文件拖进那一页的列表，再把它的开关打开"
+        "（每个路径各做一遍）。要加的文件：\n「/opt/homebrew/Cellar/python@3.14/3.14.7/bin/python3.14」\n"
         "「/opt/anaconda3/bin/python3.13」\n列表里显示的名字是 python3.14、python3.13，不是本程序的名字。\n"
         "3. 按 ⌘Q 完全退出本程序，再打开它。\n"
         "列表里已经有它、开关也开着还是这样：选中它点「−」删掉，再做一次第 2 步。\n"
         "这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。"
         "不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。")
+    assert row["fda"] == {
+        "settings": "1. 点「打开完全磁盘访问设置」，会打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。",
+        "python": "2. 点「在访达里选中 Python」，把访达里选中的文件拖进那一页的列表，再把它的开关打开"
+                  "（每个路径各做一遍）。要加的文件："}
     _assert_plain(row, calls)
 
 
@@ -689,10 +694,12 @@ def test_selfcheck_row_warns_when_the_first_step_cannot_read_safari(monkeypatch,
     assert row["detail"] == (
         "Chrome：读到了 TikTok 登录；Safari：系统拒绝读取。解析流地址时，登录优先这一步只读 Safari 里的 TikTok 登录，"
         "读不了就跳过这一步（只有 TikTok 要求登录才给流地址的直播间用得到，其余直播间不受影响）")
-    # 能照做的只有授权那几步：Chrome 已经读到登录，「在 Chrome（或 Safari）里登录」不相干
-    assert row["fix"] == bl.FDA_OBSERVED + bl.fda_steps()
+    # 能照做的只有授权那几步：Chrome 已经读到登录，「在 Chrome（或 Safari）里登录」不相干。
+    # 这里是 macOS（browser_login_state 传 buttons=bl.fda_buttons_here()），那几步按按钮写、带 fda（#165）
+    assert row["fix"] == bl.FDA_OBSERVED + bl.fda_steps(buttons=True)
     assert bl.LOGIN_STEPS not in row["fix"]
     assert row["recheck"] is True
+    assert row["fda"] == bl.fda_button_lines()
     assert selfcheck.summarize([row]) == {"total": 1, "fail": 0, "warn": 1, "ok": 0}
     _assert_plain(row, calls)
     en = i18n.render(row, i18n.EN)

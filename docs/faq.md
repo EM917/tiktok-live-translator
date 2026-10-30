@@ -57,15 +57,22 @@ against the interpreter file's path (measured 2026-09-17 on macOS 27: the TCC
 log shows `identifier_type=Path` with a `python3.x` path and never mentions the
 bundle). The notice at the top of the window after you click Start, the error
 message, and this row (when no browser has a TikTok sign-in) print the exact
-path(s) for your machine. Three steps: 1. open System Settings → Privacy &
-Security → Full Disk Access; 2. press "+", press ⌘⇧G in the file picker, paste
-the path, press Return, click Open, and switch the new entry on, once for each
-path shown (the list shows the entry as `python3.x`, not under the app's name);
-3. press ⌘Q to quit the app completely and reopen it. Only if you start the app
-from a terminal (for example with Start.command), add Terminal
-(`/System/Applications/Utilities/Terminal.app`) the same way in step 2, and
-if macOS asks to quit and reopen Terminal, do that before starting the app
-again. After step 2 you can click Check Again on the notice or on this row:
+path(s) for your machine. Three steps: 1. click Open Full Disk Access
+Settings, which opens System Settings → Privacy & Security → Full Disk Access;
+2. click Show Python in Finder, drag the selected file into the list, and
+switch the new entry on, once for each path shown (the list shows the entry as
+`python3.x`, not under the app's name); 3. press ⌘Q to quit the app completely
+and reopen it. The two buttons sit next to steps 1 and 2 on the notice (click
+Show All Steps) and on this row, on a Mac only. They run `open` on the Full
+Disk Access page and `open -R` on the interpreter path shown, nothing else: the
+app never changes the setting itself. Only if you start the app from a terminal
+(for example with Start.command), click Show Terminal in Finder and drag
+Terminal into the list too in step 2, and if macOS asks to quit and reopen
+Terminal, do that before starting the app again. If a button says it couldn't
+open, or dragging doesn't work, add the file by hand: press "+" under the list,
+press ⌘⇧G in the file picker, paste the path, press Return, click Open, and
+switch the entry on (Terminal is `/System/Applications/Utilities/Terminal.app`).
+After step 2 you can click Check Again on the notice or on this row:
 the app looks once more right away (it only checks whether the cookie store
 can be read, without decrypting anything) and says whether it can read it now
 or whether you still need step 3. While the notice is showing, switching back

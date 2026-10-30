@@ -267,13 +267,15 @@ def _browser_login(mp, tmp_path):
     from app import browser_login as bl
     mp.setattr(bl, "LOGIN_STEPS", "Sign in to TikTok in Chrome, then try again.")
     mp.setattr(bl, "observed_text", lambda observed: OBSERVED)
-    mp.setattr(bl, "steps_text", lambda observed: "Sign in to TikTok in Chrome.")
+    mp.setattr(bl, "steps_text", lambda observed, **_kw: "Sign in to TikTok in Chrome.")
     rows = [selfcheck._browser_login_row({}),
             selfcheck._browser_login_row({"Chrome": bl.NOT_READ}),
             selfcheck._browser_login_row({"Chrome": bl.OK, "Safari": bl.BLOCKED}),
             selfcheck._browser_login_row({"Chrome": bl.BLOCKED}),
             # 登录优先那一步要读的 Safari 被系统拒绝读取、Chrome 读到了登录（login-5）：detail 多一句那一步只读谁
-            selfcheck._browser_login_row({"chrome": bl.OK, "safari": bl.BLOCKED})]
+            selfcheck._browser_login_row({"chrome": bl.OK, "safari": bl.BLOCKED}),
+            # macOS 上带「完全磁盘访问权限」那几步时多一个 fda（那几步旁边的按钮跟在哪几行后面），也得是英文
+            selfcheck._browser_login_row({"Chrome": bl.BLOCKED}, buttons=True)]
     with mp.context() as other_os:
         coro = selfcheck.check_browser_login()
         other_os.setattr(sys, "platform", "linux")
@@ -377,15 +379,19 @@ def test_every_selfcheck_row_reads_as_english(scenario, monkeypatch, tmp_path):
             assert "  " not in en[key].strip(), (scenario, key, en[key])    # 拼接处没有多空格
         # 两种行多带键，别的行、别的情况都只有这四个键：
         # - recheck：「浏览器登录态」那一行带「完全磁盘访问权限」那几步时多出来的布尔键（页面画「我加好了，再查一次」），
-        #   不是文字，英文界面上不用换
+        #   不是文字，英文界面上不用换。fda：同一行在 macOS 上多出来的 {按钮: 那一行}，只跟着 recheck 出现，
+        #   那几行是文字，也得是英文
         # - action / size_mb / busy：「语音识别」一行模型还没下全时多带「现在下载」那一下（app/selfcheck.py _check）
         extra = set(en) - {"name", "level", "detail", "fix"}
-        assert extra in (set(), {"recheck"}, {"action", "size_mb", "busy"}) and en["level"] == row["level"]
-        if extra == {"recheck"}:
+        assert extra in (set(), {"recheck"}, {"recheck", "fda"}, {"action", "size_mb", "busy"}) \
+            and en["level"] == row["level"]
+        if "recheck" in extra:
             assert en["recheck"] is True and scenario == "browser_login"
         elif extra:
             assert en["action"] == selfcheck.ACTION_DOWNLOAD_ASR and en["name"] == "Speech Recognition"
             assert en["level"] == selfcheck.WARN
+        for line in (en.get("fda") or {}).values():
+            assert isinstance(line, str) and line and not CJK.search(line), (scenario, line)
 
 
 def test_the_twelve_row_names_follow_the_glossary():

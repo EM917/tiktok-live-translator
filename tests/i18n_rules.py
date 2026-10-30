@@ -158,6 +158,10 @@ UI_NAMES = {
     "本场品牌": "Brand",
     "打开词表文件夹": "Open Brands Folder",
     "打开 brands 文件夹": "Open Brands Folder",
+    # 「完全磁盘访问权限」那几步旁边的按钮（browser_login.FDA_BUTTON_LABELS，只在 macOS 上有）
+    "打开完全磁盘访问设置": "Open Full Disk Access Settings",
+    "在访达里选中 Python": "Show Python in Finder",
+    "在访达里选中终端": "Show Terminal in Finder",
     # macOS 自己的界面：照抄苹果的英文原名
     "系统设置": "System Settings",
     "隐私与安全性": "Privacy & Security",

@@ -359,7 +359,9 @@ def test_the_4003110_ending_reaches_the_page_in_english_with_each_login_observat
     if borrowed:
         assert notices == []
     else:
-        assert notices and notices[-1] == i18n.render(bl.no_login_notice(login), i18n.EN)
+        # 在 macOS 上（CI 的 macos 跑器就是），那几步按「打开完全磁盘访问设置」等按钮写（pipeline._sync_login_incident）
+        assert notices and notices[-1] == i18n.render(
+            bl.no_login_notice(login, buttons=bl.fda_buttons_here()), i18n.EN)
 
 
 def test_engine_notes_name_the_engines_in_english(monkeypatch, tmp_path):

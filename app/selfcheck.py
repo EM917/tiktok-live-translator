@@ -750,10 +750,11 @@ async def browser_login_state(cookies_browser="auto"):
     observed = {}
     for browser in browsers:
         observed[browser] = await _to_thread(bl.probe, browser)
-    return observed, _browser_login_row(observed, first)
+    # 走到这里一定是 macOS：带「完全磁盘访问权限」那几步时，那几步旁边画按钮（_browser_login_row 的 buttons）
+    return observed, _browser_login_row(observed, first, buttons=bl.fda_buttons_here())
 
 
-def _browser_login_row(observed, first=("safari",)):
+def _browser_login_row(observed, first=("safari",), buttons=False):
     """{浏览器: 代码} → 自检的一行。大多数直播间不登录也能解析，所以借不到只是 WARN。
 
     first 是登录优先那一步要读的浏览器（resolver._login_first_browsers：没点名时只有 Safari，点了名就是那一个，
@@ -769,7 +770,11 @@ def _browser_login_row(observed, first=("safari",)):
         步骤只按被拒的那一步给（「在 Chrome（或 Safari）里登录」不相干），之后和第一种走同一段：按钮之类挂在这一行
         上的东西两种情况都带。detail 照旧列各浏览器，多一句那一步只读谁、读不了就跳过——只写程序自己怎么走，不说
         Chrome 的登录对哪类直播间管不管用（第八条：那天授权前后两段不是同一分钟配对）。
-    审计只记名字、等级和详情（audit.selfcheck），recheck 不进审计。"""
+    审计只记名字、等级和详情（audit.selfcheck），recheck 不进审计。
+
+    buttons=True（browser_login_state，只在 macOS 上走到）：那几步按按钮写（browser_login.fda_steps(buttons=True)），
+    这一行再多一个 fda（{按钮: 那一行}，browser_login.fda_button_lines），页面把「打开完全磁盘访问设置」「在访达里
+    选中 Python」（从终端启动时还有「在访达里选中终端」）接在对应的那一行后面。fda 同样不进审计。"""
     from . import browser_login as bl
 
     name = NAMES["browser_login"]
@@ -795,9 +800,12 @@ def _browser_login_row(observed, first=("safari",)):
         observed = refused
     if any(code == bl.OK for code in observed.values()):
         return _check(name, OK, detail)
-    row = _check(name, WARN, detail + scope, bl.steps_text(observed))
-    if bl.BLOCKED in observed.values():
+    blocked = bl.BLOCKED in observed.values()
+    row = _check(name, WARN, detail + scope, bl.steps_text(observed, buttons=buttons and blocked))
+    if blocked:
         row["recheck"] = True
+        if buttons:
+            row["fda"] = bl.fda_button_lines()
     return row
 
 
