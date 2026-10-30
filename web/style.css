@@ -1233,6 +1233,12 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   box-shadow: inset 0 0 0 0.5px var(--separator);
 }
 
+/* 「字幕译成」下面的就地提示（index.html #target-hint，app.js showTargetHint）：一句话加一颗按钮，比别的浮层窄。
+   位置、开合同上面几个顶栏浮层；几秒后自己收起，不一直盖着字幕区顶上 */
+.target-hint.popover { width: min(300px, calc(100vw - 24px)); padding: 12px 14px; }
+.target-hint-text { margin: 0; font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); }
+.target-hint .btn { margin-top: 10px; }
+
 /* ---------- 闪购浮层（web/flash.js 画内容） ----------
    标题、状态胶囊、×；顶部一排按钮（开始 / 停止 / 继续，闪购助手 0.8.0 起；「打开闪购助手」）和它旁边的一句、
    指令结果的一句；一两句最要紧的话；摘要；商品表（每行 #序号 + 标题一行省略号 + 状态药丸，下面一行细节）；

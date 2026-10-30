@@ -321,15 +321,18 @@ def _first_run_dialog(text=None):
 
 
 def _existing_instance_url(base_port):
-    """本程序是否已在运行。是则返回其 UI 地址，否则 None。
+    """本程序是否已在运行。是则返回 app/instance.Found(UI 地址, 是不是这个文件夹里的这一份, 对方的版本号)，
+    否则 None。Found 是非空元组、永远为真，只问「有没有」的几处照旧当真假用。
     用于双击两次的场景：复用已有实例，而不是再起一个后端。
     必须扫完整个自动回退区间（base_port 起 10 个端口）——已有实例可能因
     base_port 被第三方占用而跑在后面的端口上。先用 TCP 探测过滤（本机关闭
-    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹（app/instance.py），扫描耗时可忽略。"""
+    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹（app/instance.py），扫描耗时可忽略。
+    是不是这一份看首页的响应头（X-TLT-Install，加这个头之前的版本没有它，这时为 None）：
+    2026-10-29 双击打开时窗口被开到了另一个文件夹里的副本上，看起来像界面自己变了语言。"""
     import socket
     import urllib.request
 
-    from app.instance import PROBE_BYTES, looks_like_us
+    from app.instance import PROBE_BYTES, Found, looks_like_us, peer_version, same_install
     for port in range(base_port, base_port + 10):
         with socket.socket() as probe:
             probe.settimeout(0.3)
@@ -339,7 +342,7 @@ def _existing_instance_url(base_port):
         try:
             with urllib.request.urlopen(url, timeout=1.5) as resp:
                 if looks_like_us(resp.read(PROBE_BYTES).decode(errors="replace")):
-                    return url
+                    return Found(url, same_install(resp.headers, ROOT), peer_version(resp.headers))
         except Exception:
             pass
     return None
@@ -1002,8 +1005,13 @@ def main():
             if not args.no_open and args.url is None:
                 existing = _existing_instance_url(args.port)
                 if existing:
-                    print("[信息] 检测到程序已在运行，直接打开现有界面 " + existing)
-                    webbrowser.open(existing)
+                    print("[信息] 检测到程序已在运行，直接打开现有界面 " + existing.url)
+                    # 不是这个文件夹里的这一份：照旧打开它，但说一声（同 run_with_window）
+                    from app.instance import other_install_text
+                    note = other_install_text(existing)
+                    if note is not None:
+                        _info_dialog(note)
+                    webbrowser.open(existing.url)
                     return
                 _check_update_guard()
             else:
@@ -1056,12 +1064,22 @@ def run_with_window(args):
     existing = _existing_instance_url(args.port)
     if existing:
         print("[信息] 检测到程序已在运行，打开已有实例的窗口")
+        # 端口上那一份不是这个文件夹里的（新下了一版、旧的还开着；或者开着另一个副本）：照旧打开它，
+        # 但说清楚打开的是哪一份，不然看起来像「界面自己变了」（app/instance.py other_install_text）。
+        # 和下面 --url 那句并进同一个框：_info_dialog 同一时刻只管一个
+        from app.instance import other_install_text
+        notes = []
+        other = other_install_text(existing)
+        if other is not None:
+            notes.append(other)
         if args.url:
             # 地址没有送进那个实例：明说，别让用户以为已经在监听
-            _info_dialog(L("程序已经在运行，这次给的直播间地址没有自动开始。\n"
+            notes.append(L("程序已经在运行，这次给的直播间地址没有自动开始。\n"
                            "请在已打开的窗口里粘贴地址后点「开始翻译」。",
                            "The app is already running, so this live link didn’t start "
                            "automatically.\nPaste the link in the open window, then click Start."))
+        if notes:
+            _info_dialog(L("\n\n", "\n\n").join(notes))
         from app.macbrand import brand_mac_app
         from app.window_attention import expose_attention
         from app.window_close import confirm_localization_kwargs
@@ -1071,7 +1089,7 @@ def run_with_window(args):
         # 这个窗口不 guard_close（后端在另一个进程里），localization 只给页面里 JS confirm()
         # 的按钮用。今天没传、用 pywebview 自带的文字；关窗表里有了 global.ok（M11）才传，与闸无关
         loc = confirm_localization_kwargs(webview.create_window, lang)
-        window = webview.create_window(i18n.text(APP_NAME, lang), existing,
+        window = webview.create_window(i18n.text(APP_NAME, lang), existing.url,
                                        width=1000, height=760, min_size=(420, 480), **loc)
         _close_launch_dialog()
         # 语言切换发生在另一个进程里，这个进程收不到：页面重载后经 JS 桥告诉窗口。

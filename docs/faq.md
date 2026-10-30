@@ -291,6 +291,14 @@ together, start the app with `TLT_ASR_SAFEGUARDS=off`; the numbers stay in the a
 `app/asr_evidence.py` and the badge; no other code reads the new audit keys, and deleting
 `logs/asr-evidence/` has no effect on the app.
 
+**Opening the app showed a different copy.** If the app is already running, opening it again
+(from this folder or from another one) doesn't start a second copy: the window opens on the
+running one. When the running copy isn't the one in the folder you opened, for example an older
+version you downloaded earlier is still open, the app says so, with that copy's version: in a
+dialog when you opened TikTok Live Translator.app, in the terminal window otherwise. To use the one
+in this folder, quit the running copy first, then open this one again. Copies from before this
+message existed (0.19.0 and earlier) don't report their folder, and the message says that instead.
+
 **The interface is not on port 8765.** If 8765 is occupied, the app
 moves to the next free port in 8766–8774 and says so in the terminal. That's
 the control page only; Phone Viewing uses a port of its own and reuses the
