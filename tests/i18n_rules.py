@@ -158,12 +158,14 @@ UI_NAMES = {
     "本场品牌": "Brand",
     "打开词表文件夹": "Open Brands Folder",
     "打开 brands 文件夹": "Open Brands Folder",
+    "打开闪购助手": "Open Flash Sale Helper",
     # macOS 自己的界面：照抄苹果的英文原名
     "系统设置": "System Settings",
     "隐私与安全性": "Privacy & Security",
     "完全磁盘访问权限": "Full Disk Access",
     "允许": "Allow",
     "始终允许": "Always Allow",
+    "应用程序": "Applications",
 }
 
 # 产品名映射：中文臂含前者，英文臂必须含后者

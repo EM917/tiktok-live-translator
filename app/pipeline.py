@@ -715,6 +715,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 顶栏「闪购」浮层里的「打开闪购助手」：不带参数，argv 写死（app/flash_sale.open_argv）。放后台跑、
             # 立刻返回。只有本机页面发得出来：手机入站只认 retranslate，浮窗页的入站一律丢弃
             return self._open_flash_helper()
+        elif mtype == "flash_find":
+            # 打开闪购浮层时页面发的：再找一次闪购助手装在哪（settings.json 指定的位置、/Applications、~/Applications），
+            # 只看文件系统，装完不用重启。不带参数（带了也不看），找到的变了才发布（见 app/pipeline_flash.py _flash_find）。
+            # 手机入站只认 retranslate，浮窗页的入站一律丢弃
+            return self._flash_find()
         elif mtype == "flash_control":
             # 同一个浮层里的「开始」「停止」「继续」（闪购助手 0.8.0 起）：只读 action（开始另读 step、id：点两下，
             # 两下都到后端），动作写死白名单、地址写死 127.0.0.1:9334，带着控制密钥 POST 过去。放后台发、立刻返回，

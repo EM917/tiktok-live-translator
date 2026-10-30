@@ -182,7 +182,8 @@
         <span class="btn-label" data-en="Floating Window">浮窗</span>
       </button>
       <!-- 闪购：本机另一个程序「闪购助手」的状态（app/pipeline_flash.py 每 3 秒查一次它的 127.0.0.1:9334/status，
-           文案在 web/flash.js），闪购助手 0.8.0 起浮层里还能开始、停止、继续。只有 macOS 上装了它，hello 的 config 里才有 flash_sale 这个键，按钮才出现；
+           文案在 web/flash.js），闪购助手 0.8.0 起浮层里还能开始、停止、继续。只有 macOS 上找到了它（或者没找到、但启动时 9334 上的回话像它的，
+           launch-7），hello 的 config 里才有 flash_sale 这个键，按钮才出现；
            首页和直播中都显示（开播前就看得到它开没开、要不要登录）。要人处理时按钮变橙色并带一个橙点（形状和颜色一起变），
            title / aria-label 跟着写「闪购助手 · 要处理」。窄于 1400px 只留图标（文字视觉隐藏，读屏照念，同 #float-btn），
            中文页放得下时露出「闪购」两个字（style.css）。不放在 #switch-btn 和「停止」之间：那段右边距是专门隔开那两颗的 -->
@@ -193,7 +194,8 @@
       </button>
       <!-- 闪购浮层：状态，加顶部一排按钮。按钮只替人按下闪购助手面板上的那个大按钮（开始、停止、继续，闪购助手 0.8.0 起，
            app.js 发 flash_control，后端带着控制密钥 POST 过去）和「打开闪购助手」；不新建闪购、不改价、不加商品、不批准、
-           不续开。哪几颗露出来、能不能点由 flash.js flashControlView 按状态定（连不上、版本认得出且低于 0.8.0 时只剩「打开」）。
+           不续开。哪几颗露出来、能不能点由 flash.js flashControlView 按状态定（连不上、版本认得出且低于 0.8.0 时只剩「打开」；
+           后端没找到 .app、状态里 app_found 是 false 时连「打开」也藏起来）。打开浮层时 app.js 发 flash_find，后端再找一次。
            内容由 flash.js renderFlashPanel 在收到状态时就画好（不等打开），商品标题标 translate="no"，记录正文带 class i18n-data。
            报警（违禁词）不借这里：闪购的提醒只走这颗按钮的颜色和这个浮层（CLAUDE.md 第六条） -->
       <div id="flash-panel" class="flash-panel popover hidden" role="dialog" aria-label="闪购助手" data-en-aria-label="Flash Sale Helper">
@@ -854,7 +856,7 @@
   <script src="/static/settings-rows.js?v=3"></script>
   <script src="/static/live-ui.js?v=7"></script>
   <script src="/static/guard.js?v=6"></script>
-  <script src="/static/flash.js?v=3"></script>
-  <script src="/static/app.js?v=84"></script>
+  <script src="/static/flash.js?v=4"></script>
+  <script src="/static/app.js?v=85"></script>
 </body>
 </html>

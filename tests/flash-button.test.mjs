@@ -224,9 +224,9 @@ for (const lang of ["zh", "en"]) {
     page.push(Object.assign({ type: "flash_sale" }, gone, { app_found: true }));
     assert.ok(!hidden(page, "flash-open"));
     assert.ok(hidden(page, "flash-ctl-note"));
-    page.push(Object.assign({ type: "flash_sale" }, calm({ app_found: false })));
+    page.push(Object.assign({ type: "flash_sale" }, calm({ app_found: false, app_version: "0.9.0" })));
     assert.ok(hidden(page, "flash-open"), "在运行时也不出「打开」");
-    assert.ok(!hidden(page, "flash-stop"));
+    assert.ok(!hidden(page, "flash-stop"), "停止照常（0.8.0 起的版本）");
   });
 
   test(name("notice where=flash 写进浮层；关上浮层时收掉"), () => {
@@ -337,7 +337,7 @@ test("按钮在浮窗之后、换主播之前，浮层紧跟着它；文字是�
   assert.match(tag, /<span class="btn-label" data-en="Flash Sale">闪购<\/span>/);
   assert.match(tag, /<svg class="i" aria-hidden="true"><use href="#i-flash"\/><\/svg>/);
   assert.match(html, /<symbol id="i-flash" viewBox="0 0 16 16">/);
-  assert.match(html, /<script src="\/static\/flash\.js\?v=3"><\/script>\n {2}<script src="\/static\/app\.js/);
+  assert.match(html, /<script src="\/static\/flash\.js\?v=4"><\/script>\n {2}<script src="\/static\/app\.js/);
 });
 
 test("「Aa」紧挨着字号控件、名字同滑块（字幕字号 / Caption size），两种语言都写 Aa", () => {

@@ -2,10 +2,16 @@
 """顶栏「闪购」：查看本机闪购助手的状态，推给控制页；点「打开闪购助手」时执行 open -a；闪购助手 0.8.0 起，
 浮层里的「开始」「停止」「继续」由这里替人按下闪购助手面板上的那个大按钮（POST /start、/stop、/resume）。
 
-只在 macOS、装了闪购助手时才有：main.py 在第一次 hello 之前调 attach_flash_sale，装了才往
-server.config 里写 flash_sale 这个键、起轮询；没装就连这个键都没有，页面据此不画按钮（同浮窗的
-float_window）。是否安装只在启动时判一次。不在 Pipeline.__init__ 里检测：测试大量构造 Pipeline，
-开发机上可能真装着闪购助手，放在那里本机和 CI 的结果就会不一样，轮询还会真的去连本机的 9334。
+只在 macOS 上才有：main.py 在第一次 hello 之前调 attach_flash_sale，接上了才往 server.config 里写 flash_sale
+这个键、起轮询；接不上就连这个键都没有，页面据此不画按钮（同浮窗的 float_window）。接得上的有两种：
+- 找到了闪购助手.app（flash_sale.find_app：settings.json 的 flash_sale.app_path 指定的位置优先，再看 /Applications、
+  ~/Applications；直播助手平台轮廓 §7.2 第 2 步）；
+- 没找到，但启动时当场读一次 9334 的 /status，回话像闪购助手的（flash_sale.status_refusal，launch-7 用户选 B）：
+  照样有按钮、能看能停，只是没有「打开闪购助手」。推给页面的状态里 app_found 说是哪一种。
+没找到时终端一行（双击 .app 启动时进运行日志）。打开浮层时页面发 flash_find，这里再找一次（只看文件系统），
+装完、挪完不用重启；没有按钮就没有浮层，那种情况要等第 6 步首页「工具」行的「重新找」。
+不在 Pipeline.__init__ 里检测：测试大量构造 Pipeline，开发机上可能真装着闪购助手，放在那里本机和 CI 的结果
+就会不一样，轮询还会真的去连本机的 9334。
 演示模式（--demo）不调 attach_flash_sale：不查、不发，flash_control 指令也什么都不做。
 
 隔离：
@@ -14,8 +20,8 @@ float_window）。是否安装只在启动时判一次。不在 Pipeline.__init_
 - 浮窗收不到：不在 app/server.py 的 FLOAT_TYPES / FLOAT_CONFIG_KEYS 里；浮窗页的入站一律丢弃；
 - 不借报警、incident、status、顶部提示条来提醒（CLAUDE.md 第六条）：提醒只是顶栏按钮自己变色；
 - 不碰 TikTok。控制只替人按开始、停止、继续：不新建闪购、不改价、不加商品，第一次的确认框照旧在专用 Chrome 里点。
-不写审计、不写 session 日志、不加 settings 键。终端只在状态跳变、发控制指令时打一行（中文），不打印商品标题、
-记录正文，也绝不打印控制密钥。
+不写审计、不写 session 日志。settings 只读 flash_sale 这个键里本机指定的位置，不写（写是第 6 步「选一下它在哪」）。
+终端只在状态跳变、找没找到、发控制指令、open 没打开时打一行（中文），不打印商品标题、记录正文，也绝不打印控制密钥。
 
 控制（_flash_control）谁能发：本机控制页，以及没带 Origin 的本机进程（curl、本地脚本；app/server.py 把它们
 也当控制面）。后者只能发停止：开始、继续回 local_only（app/server.py CONTROL_SOURCE，直播助手平台轮廓 §5.6）。
@@ -31,11 +37,13 @@ flash_sale.stop_precheck、_flash_stop_run：停止在出事时也要发得出�
 挡不住存心冒充的进程。
 """
 import asyncio
+import sys
 import time
 from urllib.parse import urlsplit
 
 from . import flash_sale
-from .i18n import L
+from . import settings as _settings
+from .i18n import L, LN
 from .server import CONTROL_SOURCE
 
 # 终端行里的动作名（终端永远是中文）
@@ -45,11 +53,22 @@ _CTL_OUTCOMES = {"no_status": "没有发出", "no_token": "没有发出", "unrea
                  "no_answer": "没有回话", "bad_reply": "回话读不出", "failed": "出错",
                  "local_only": "没有发出", "not_confirmed": "没有发出"}   # i18n: terminal
 _CTL_REFUSED = "没有接受"   # i18n: terminal
+# settings.json 里指定的位置用不了（flash_sale.configured_app 的原因代码）：终端一行，同一种只打一次
+_CFG_PROBLEMS = {
+    "bad_value": "[警告] 闪购助手：settings.json 的 flash_sale.app_path 不是一个路径，没用它",
+    "not_absolute": "[警告] 闪购助手：settings.json 的 flash_sale.app_path 不是完整路径，没用它",
+    "wrong_name": "[警告] 闪购助手：settings.json 的 flash_sale.app_path 指的不是 {}，没用它".format(flash_sale.APP_NAME),
+}
 
 
 class FlashSaleMixin:
     def _init_flash_sale(self):
-        self._flash_app = None          # 检测到的 .app 路径；None = 没装（或不是 macOS），整个功能不存在
+        # 有没有闪购按钮（整个功能在不在）：找到了 .app，或者启动时 9334 上的 /status 像闪购助手的回话（launch-7 B）
+        self._flash_on = False
+        self._flash_app = None          # 找到的 .app 路径；None = 没找到，这时没有「打开闪购助手」（状态里 app_found=false）
+        self._flash_platform = None     # attach 时定下的平台、候选位置：打开浮层时再找（_flash_find）用同一组
+        self._flash_candidates = None
+        self._flash_settings = None     # 读 settings 的函数；None = 调用那一刻取 settings.load_settings（测试换文件）
         self._flash_task = None         # 轮询任务
         self._flash_base = None         # StatusTracker 最近交出来的状态（还没叠上控制指令的进度）
         self._flash_last = None         # 上次发布的 dict：没变就不广播（一次广播最坏被卡死的页面拖 2 秒）
@@ -83,26 +102,86 @@ class FlashSaleMixin:
     # ---- 启动、停止 ----
 
     async def attach_flash_sale(self, platform=None, candidates=None):
-        """main.py 在第一次 hello 之前调。装了才写 config 键、起轮询；任何异常都吞掉，不挡启动。"""
+        """main.py 在第一次 hello 之前调。不是 macOS 什么都不做。找到了 .app，或者没找到、但当场读的一次 /status 像闪购助手的
+        回话（launch-7 B），才写 config 键、起轮询。没找到时终端一行。任何异常都吞掉，不挡启动。
+        没找到时的那一次 /status 最多 4 秒（fetch_status：连接 2 秒、读 2 秒）；没人在听时立刻连不上。"""
         try:
-            app = flash_sale.find_app(platform=platform, candidates=candidates)
-            if app is None:
+            platform = sys.platform if platform is None else platform
+            if platform != "darwin":
                 return
+            self._flash_platform, self._flash_candidates = platform, candidates
+            app, looked = self._flash_locate()
+            if app is None:
+                self._flash_log_missing(looked)
+                kind, value = await self._flash_fetch(self._flash_url)
+                refusal = flash_sale.status_refusal(kind, value)
+                if refusal is not None:
+                    if refusal != "not_ok":
+                        print("[信息] 闪购助手：{} 的 /status 不像闪购助手的回话（{}），不显示闪购按钮".format(
+                            self._flash_where(), refusal))
+                    return
             self._flash_app = app
-            state = flash_sale.empty_state("checking")
-            self._flash_base = state
+            self._flash_on = True
+            self._flash_base = flash_sale.empty_state("checking")
+            state = self._flash_compose()
             self._flash_last = state
             self._flash_conn_prev = "checking"
-            # 发布闸（flash_sale.START_ENABLED）：页面据此画不画「开始」「继续」。和 flash_sale 一起，装了才有
+            # 发布闸（flash_sale.START_ENABLED）：页面据此画不画「开始」「继续」。和 flash_sale 一起，接上了才有
             self.server.config["flash_start_enabled"] = flash_sale.START_ENABLED is True
             self.server.config["flash_sale"] = state
-            print("[信息] 闪购助手：已装，开始查看 {} 的状态".format(self._flash_where()))
+            if app is not None:
+                print("[信息] 闪购助手：已装，开始查看 {} 的状态".format(self._flash_where()))
+            else:
+                print("[信息] 闪购助手：没找到程序，但 {} 的 /status 像闪购助手的回话，开始查看它的状态（没有「打开闪购助手」）"
+                      .format(self._flash_where()))
             self._start_flash_watch()
         except Exception as exc:
             print("[警告] 闪购助手：启动时出错（{}），这一次不显示闪购按钮".format(type(exc).__name__))
+            self._flash_on = False
             self._flash_app = None
             self.server.config.pop("flash_sale", None)
             self.server.config.pop("flash_start_enabled", None)
+
+    # ---- 找程序 ----
+
+    def _flash_locate(self):
+        """找一次 .app（只看文件系统）→ (路径或 None, 按先后看过的位置)。settings.json 里指定的位置优先，用不了的跳过
+        （终端一行，同一种只打一次）；再看候选位置。启动时（attach_flash_sale）和打开浮层时（_flash_find）各调一次。
+        settings.json 读不出、坏了都当没指定（load_settings 自己备份坏文件、交回空的）。"""
+        saved = (self._flash_settings or _settings.load_settings)()
+        configured, problem = flash_sale.configured_app(saved)
+        if problem is not None:
+            self._flash_log_once("cfg:" + problem, _CFG_PROBLEMS[problem])
+        looked = flash_sale.app_search_paths(candidates=self._flash_candidates, configured=configured)
+        app = flash_sale.find_app(platform=self._flash_platform, candidates=self._flash_candidates,
+                                  configured=configured)
+        if configured is not None and app != configured:
+            self._flash_log_once("cfg:missing:{}".format(configured),
+                                 "[警告] 闪购助手：settings.json 的 flash_sale.app_path 指的 {} 不存在（或不是文件夹），没用它"
+                                 .format(configured))
+        return app, looked
+
+    def _flash_log_missing(self, looked):
+        """没找到 .app：终端一行（双击 .app 启动时进运行日志），列出看过哪几处、本机指定位置写在哪个键里。"""
+        print("[信息] 闪购助手：没找到 {}（找过 {}）。装在别处的话，可以把完整路径写进 settings.json 的 flash_sale.app_path"
+              .format(flash_sale.APP_NAME, "、".join(str(p) for p in looked)))
+
+    def _flash_find(self):
+        """控制页打开闪购浮层时发的 flash_find（handle_control 调，同步）：再找一次 .app，装完、挪完、改了 settings.json
+        都不用重启。不带参数（带了也不看）：找的位置只来自 settings.json 和写死的候选位置。只看文件系统，不连 9334。
+        没有闪购按钮时什么都不做（没有按钮就打不开浮层）。找到的和上次一样：什么都不做、不打印；不一样：终端一行（找到了
+        哪一个，或者和启动时同一句「没找到」），交回发布的协程（状态里的 app_found 变了才真的广播）。"""
+        if not self._flash_on:
+            return None
+        found, looked = self._flash_locate()
+        if found == self._flash_app:
+            return None
+        if found is None:
+            self._flash_log_missing(looked)
+        else:
+            print("[信息] 闪购助手：找到了 {}".format(found))
+        self._flash_app = found
+        return self._flash_refresh()
 
     def _start_flash_watch(self):
         if self._flash_task is not None:
@@ -172,16 +251,16 @@ class FlashSaleMixin:
     def _flash_compose(self):
         """最近一次查到的状态叠上此刻控制指令的进度：control 换成 {"action", "phase"}（不带 until：它不变，
         但下发了也没用，页面不自己计时），attention 跟着重算（开始、继续被接受后等生效的那 30 秒里，有几种情况
-        不算要人处理，见 flash_sale.attention）。没有指令时就是 base 本身。每次一个新 dict，不原地改 base。"""
+        不算要人处理，见 flash_sale.attention）；再带上 app_found（找没找到 .app）。每次一个新 dict，不原地改 base。"""
         base = self._flash_base
         if base is None:
             return None
         ctl = self._flash_ctl
         shown = None if ctl is None else {"action": ctl["action"], "phase": ctl["phase"]}
-        if base.get("control") == shown:
-            return base
-        state = dict(base, control=shown)
-        state["attention"] = flash_sale.attention(state)
+        # 找没找到 .app：false 时页面不画「打开闪购助手」（launch-7 B）。每一份都带，hello 和广播一样
+        state = dict(base, control=shown, app_found=self._flash_app is not None)
+        if base.get("control") != shown:
+            state["attention"] = flash_sale.attention(state)
         return state
 
     def _flash_lock(self):
@@ -283,16 +362,20 @@ class FlashSaleMixin:
     async def _flash_open_run(self):
         """open -a <完整路径>，看返回码。0：之后 BOOST_SEC 秒里每 3 秒查一次，并马上查一次（状态自己会变，
         不发提示）。非 0、超时、出错：终端一行，再发一条 notice（where=flash，页面写在闪购浮层里）。
-        只写观察到的事（返回码），不猜原因（CLAUDE.md 第八条）。"""
+        open 的标准错误接成管道读回来（launch-8）：里面系统给的错误号（flash_sale.open_error_codes，例如 -10669）和返回码
+        一起照实写给人，再说能做什么；标准错误整理成一行进终端。只写观察到的事，不猜原因、不解释那个号（CLAUDE.md 第八条）。"""
         rc = None
+        codes = ()
         try:
             argv = flash_sale.open_argv(self._flash_app)
             print("[信息] 闪购助手：执行 open -a {}".format(self._flash_app))
             run = self._flash_exec or asyncio.create_subprocess_exec
+            err = b""
             try:
                 proc = await run(*argv, stdout=asyncio.subprocess.DEVNULL,
-                                 stderr=asyncio.subprocess.DEVNULL)
-                rc = await asyncio.wait_for(proc.wait(), flash_sale.OPEN_TIMEOUT_SEC)
+                                 stderr=asyncio.subprocess.PIPE)
+                _out, err = await asyncio.wait_for(proc.communicate(), flash_sale.OPEN_TIMEOUT_SEC)
+                rc = proc.returncode
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError:
@@ -303,15 +386,36 @@ class FlashSaleMixin:
                 self._flash_boost_until = self._flash_mono() + flash_sale.BOOST_SEC
                 self._flash_wake()
                 return
-            if rc is None:
-                text = L("没能打开闪购助手。", "Couldn’t open Flash Sale Helper.")
-            else:
-                print("[警告] 闪购助手：open 返回 {}，没有打开".format(rc))
-                text = L("没能打开闪购助手（open 返回 {}）。",
-                         "Couldn’t open Flash Sale Helper (open returned {}).").format(rc)
-            await self.server.broadcast({"type": "notice", "where": "flash", "text": text})
+            if rc is not None:
+                output = flash_sale.open_output_text(err)
+                # 号从整段里找：进终端的那一行最多 OPEN_OUTPUT_SHOW 个字，截掉的后半段里也可能有
+                codes = flash_sale.open_error_codes((err or b"").decode("utf-8", "replace"))
+                print("[警告] 闪购助手：open 返回 {}，没有打开{}".format(
+                    rc, "（系统错误号 {}）".format("、".join(str(c) for c in codes)) if codes else ""))
+                if output:
+                    print("[警告] 闪购助手：open 的输出：{}".format(output))
+            await self.server.broadcast({"type": "notice", "where": "flash",
+                                         "text": self._flash_open_failure_text(rc, codes)})
         finally:
             self._flash_opening = False
+
+    @staticmethod
+    def _flash_open_failure_text(rc, codes):
+        """「打开闪购助手」没打开时浮层里那一句（launch-8）：发生了什么（open 的返回码、系统给的错误号，照实写），
+        再说能做什么（到访达里双击它）。rc 是 None：open 没能执行或者没返回，没有返回码可写。不解释错误号、不猜原因。"""
+        if rc is None:
+            return L("没能打开闪购助手。可以在访达里双击闪购助手，再试一次。",
+                     "Couldn’t open Flash Sale Helper. Double-click Flash Sale Helper in Finder to try again.")
+        if not codes:
+            return L("没能打开闪购助手（open 返回 {}）。可以在访达里双击闪购助手，再试一次。",
+                     "Couldn’t open Flash Sale Helper (open returned {}). "
+                     "Double-click Flash Sale Helper in Finder to try again.").format(rc)
+        return LN(len(codes), "没能打开闪购助手（open 返回 {}，系统错误号 {}）。可以在访达里双击闪购助手，再试一次。",
+                  "Couldn’t open Flash Sale Helper (open returned {}, system error {}). "
+                  "Double-click Flash Sale Helper in Finder to try again.",
+                  "Couldn’t open Flash Sale Helper (open returned {}, system errors {}). "
+                  "Double-click Flash Sale Helper in Finder to try again.").format(
+                      rc, L("、", ", ").join(str(c) for c in codes))
 
     # ---- 开始、停止、继续 ----
 
@@ -334,7 +438,7 @@ class FlashSaleMixin:
           回话（schema 不是 1、page 不是契约里的代码，见 StatusTracker.control_refusal）：不读密钥、不发，结果
           error=no_status，终端在后一种时另带原因（schema、page）。在等生效的上一个指令照旧等着；
         - 其余放后台发（_flash_control_run），不在这里 await：不挡同一页面后面的消息。"""
-        if self._flash_app is None:
+        if not self._flash_on:
             return None
         action = msg.get("action")
         if not isinstance(action, str) or action not in flash_sale.CONTROL_ACTIONS:

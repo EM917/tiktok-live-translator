@@ -26,6 +26,7 @@ server.broadcast({"type": "flash_sale", …})          i18n.DATA_ONLY；手机 D
 web/app.js（接线、未读、开合） → web/flash.js（文案、排序、渲染） → #flash-btn 的颜色、#flash-panel 的内容
    ▲
 「打开闪购助手」 → {"type": "open_flash_helper"} → Pipeline.handle_control → open -a <完整路径>
+打开浮层          → {"type": "flash_find"} → 再找一次 .app（只看文件系统），找到的变了才发布（状态里的 app_found，§2）
 「开始」「停止」「继续」 → {"type": "flash_control", "action": …} → Pipeline.handle_control
    → 读控制密钥 → POST http://127.0.0.1:9334/<action> → {"type": "flash_control_result", …} 广播给控制页（§9）
 ```
@@ -35,9 +36,25 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 
 ## 2. 有没有这个按钮
 
-- 只看两个位置：`/Applications/闪购助手.app`、`~/Applications/闪购助手.app`（`flash_sale.app_candidates`），不跑 mdfind；
-  不是 macOS 一律当没装。按**完整路径**判断和打开，检测到的和打开的是同一个东西；不按 bundle id 打开（它不进公开仓库）。
-- 只在启动时判一次：`main.py` 在第一次 hello 之前 `await pipeline.attach_flash_sale()`。运行中装上或删掉，要重启才变。
+- 找程序（直播助手平台轮廓 §7.2 第 2 步，2026-10-29）按先后看三处：`settings.json` 里本机指定的位置
+  （`{"flash_sale": {"app_path": "…/闪购助手.app"}}`，`flash_sale.configured_app`）、`/Applications/闪购助手.app`、
+  `~/Applications/闪购助手.app`（`flash_sale.app_candidates`）。不跑 mdfind；不是 macOS 一律当没装。按**完整路径**判断和打开，
+  检测到的和打开的是同一个东西；不按 bundle id 打开（它不进公开仓库）。
+  - 指定的位置只认完整路径（可以用 `~`）、最后一截正好是 `闪购助手.app` 的（「闪购助手 2.app」不认）；不存在、不是文件夹、
+    不是完整路径、名字不对、不是字符串的，跳过，终端各一行（同一种只打一次），接着看另外两处。
+  - 这一步只读这个键，不写。「选一下它在哪」（pywebview 的文件对话框）在第 6 步首页「工具」行里。
+  - 都没找到：终端一行，列出看过哪几处、指定位置写在哪个键里（双击 `.app` 启动时终端输出进运行日志）。
+- 启动时判一次：`main.py` 在第一次 hello 之前 `await pipeline.attach_flash_sale()`。
+- **没找到、但闪购助手正开着**（launch-7，用户 10-29 选 B）：没找到 `.app` 时，当场读一次 9334 的 `/status`
+  （最多 4 秒；没人在听时立刻连不上），回话像闪购助手的（读懂了、`schema` 是 1、`page` 是契约里的代码，`flash_sale.status_refusal`，
+  和开始、继续发之前的那三条一样）就照样接上：有按钮、能看能停，只是没有「打开闪购助手」。推给页面的状态里
+  `app_found` 是 `false`（找到了是 `true`；状态里没有这个键时页面当找到了）。这时闪购助手又没在运行、读不出的话，那一排一颗按钮
+  都没有，旁边写一句「把它拖进「应用程序」，再关上、打开这个浮层……」（`docs/i18n-style.md` #181）。回话不像闪购助手的
+  （schema、page 对不上）终端一行，不接。
+- **打开浮层时再找一次**：页面打开闪购浮层时发 `{"type": "flash_find"}`（不带参数，带了也不看），后端照上面三处再找一遍
+  （只看文件系统，不连 9334），找到的变了才发布（终端一行「找到了 …」或「没找到 …」）。装进「应用程序」、挪了位置、改了
+  `settings.json`，都不用重启。没有按钮就没有浮层：启动时既没找到、9334 上也没有它的，要等第 6 步首页「工具」行的「重新找」，
+  现在还是要重启。手机发不进 `flash_find`（入站只认 retranslate），浮窗页的入站一律丢弃。
 - 演示模式（`--demo`）不接：不查 9334、不画按钮，`flash_control` 指令也什么都不做。演示模式是拿来截图、
   录屏验界面的，9334 上是真实店铺的真实商品，不能进截图，更不能被演示时的一次点击停掉
   （`tests/test_pipeline_flash.py` 读 main.py 的语法树钉着这个 `if not args.demo`）。要看按钮和浮层的样子，
@@ -47,7 +64,7 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 - 不在 `Pipeline.__init__` 里检测：测试大量构造 Pipeline，开发机上可能真装着闪购助手，放在那里本机和 CI 的结果
   就会不一样，轮询还会真的去连本机的 9334。
 - 按钮首页和直播中都显示（用户 10-27 定）：开播前就看得到闪购助手开没开、要不要登录，也能在首页点「打开」。
-- 不加 settings 键，没有开关。
+- settings 只读 `flash_sale` 这个键里的 `app_path`（上面），没有开关。第 11 步迁到 `tools` 键（直播助手平台轮廓 §5.8）。
 
 ## 3. 闪购助手的接口（契约摘要）
 
@@ -216,7 +233,11 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 - `handle_control` 立刻返回，`open` 放后台跑：不挡同一页面后面的「停止」。上一次还没返回时，连点只跑一次。
 - 成功（返回 0）：不发任何提示，状态自己会从「没在运行」变成别的。
 - 失败：终端一行，再发 `{"type": "notice", "where": "flash", "text": …}`，页面写进浮层里的 `#flash-note`（全局提示照样排队）。
-  只有两句：「没能打开闪购助手（open 返回 {rc}）。」「没能打开闪购助手。」只写返回码，不猜原因。
+  2026-10-29（launch-8）起 open 的标准错误接成管道读回来：句子里照实写返回码和系统给的错误号（`Code=-10669`、
+  `error -10810` 这两种写法，`flash_sale.open_error_codes`，最多 3 个），再说能做什么——「可以在访达里双击闪购助手，再试一次。」
+  （`docs/i18n-style.md` #165）。只写数，不解释那个号、不猜原因（CLAUDE.md 第八条）。open 没能执行、10 秒没返回时没有返回码，
+  只写「没能打开闪购助手。」加那半句。标准错误整理成一行（去掉控制字符，最多 300 个字）另进终端。
+- 没找到 `.app`（状态里 `app_found` 是 `false`，§2）时不画这颗按钮；本机脚本硬发 `open_flash_helper` 也什么都不做。
 - 和本地服务断开时按钮置灰；点了没发出去，`#flash-note` 写「与本地服务断开，正在重连——稍候再试。」，不装作点成了。
 - 本机控制页能发（没带 Origin 的本机进程也能，见 §9.4）：手机入站只认 retranslate，浮窗页的入站一律丢弃。
 

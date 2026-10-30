@@ -4048,6 +4048,7 @@
     start: document.getElementById("flash-start"),
     stop: document.getElementById("flash-stop"),
     resume: document.getElementById("flash-resume"),
+    open: flashOpenBtn,               // 「打开闪购助手」：后端没找到 .app（app_found=false）时藏起来，禁用照旧在 setStatus 里管
     note: document.getElementById("flash-ctl-note"),
     desc: document.getElementById("flash-desc"),
   };
@@ -4214,13 +4215,16 @@
 
   // 不挪焦点（同手机同看）：浮层紧跟着按钮，键盘用户按 Tab 就进去了。
   // 打开即算看过了眼下的问题记录（用户 10-27 定）：按钮恢复原色，浮层里那几条照样加粗列着，直到关上；
-  // 开着时新来的照样算没看过（按钮再变色），下次打开才记
+  // 开着时新来的照样算没看过（按钮再变色），下次打开才记。
+  // 打开时发 flash_find：后端再找一次闪购助手装在哪（只看本机文件系统），装完、挪完不用重启；找到的变了才推新状态
+  // （app_found）。断线发不出去就算了：浮层照常打开，不写断线那句（打开浮层不是要它做什么）
   function openFlashPanel() {
     if (!flashPanel || !flashState) return;
     flashSeenAtOpen = flashSeen;
     markFlashSeen();
     paintFlash();
     showPopover(flashPanel, flashBtn);
+    send({ type: "flash_find" });
   }
   function closeFlashPanel() {
     if (!flashPanel) return;
