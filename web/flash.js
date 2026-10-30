@@ -16,7 +16,8 @@
  * 几条不变量：
  * - **只替人按那三个按钮**：浮层里能做的只有「打开闪购助手」（app.js 发 open_flash_helper）和闪购助手面板上那个大按钮的
  *   开始、停止、继续（发 flash_control）；不新建闪购、不改价、不加商品、不批准、不续开。版本认得出且低于 0.8.0、
- *   连不上、读不出时那一排只剩「打开」；按钮显示什么、能不能点全由 flashControlView 按状态定；
+ *   连不上、读不出时那一排只剩「打开」；后端没找到 .app 时（状态里 app_found 是 false，launch-7 B）连「打开」也没有。
+ *   按钮显示什么、能不能点全由 flashControlView 按状态定。打开浮层时 app.js 另发 flash_find，后端再找一次 .app；
  * - **两边一字不差的规则**：等续开（flashWaitingRenewal）、排序（flashSortProducts）、指令生效（flashControlDone）、
  *   开始后的过渡（flashStarting）和后端 app/flash_sale.py 各有一份，两边吃同一张表
  *   tests/fixtures/flash_sale/shared-rules.json；
@@ -596,7 +597,16 @@ function flashNotReadyNote(page) {
   return text ? { text: text } : { text: L("页面状态：", "Page status: "), code: code };
 }
 
-/* 浮层顶部那一排（除了「打开闪购助手」，它一直在）：{start, stop, resume, note, any}。
+/* 后端没找到闪购助手装在哪（状态里 app_found 是 false）、它这时又没在运行（连不上、读不出）时，按钮旁边那句：
+ * 这里打不开它，以及放好以后怎么让「打开闪购助手」出来（打开浮层时后端会再找一次）。只说看到的，不猜它装在哪 */
+function flashNotFoundNote() {
+  return { text: L("没找到闪购助手装在哪，这里打不开它。把它拖进「应用程序」，再关上、打开这个浮层，就会出现「打开闪购助手」。",
+                   "Couldn’t find where Flash Sale Helper is installed, so it can’t be opened from here. " +
+                   "Drag it to Applications, then close and reopen this panel to get Open Flash Sale Helper.") };
+}
+
+/* 浮层顶部那一排：{start, stop, resume, open, note, any}。open 是「打开闪购助手」，只有 shown：后端找到了 .app 就露着
+ * （状态里 app_found 不是 false；旧状态、夹具里没有这个键也算找到了），能不能点由 app.js 管（断线时禁用）。
  * start / stop / resume 各是 {shown, disabled, text}；note 是按钮旁边那句（#flash-ctl-note，按钮的 aria-describedby），
  * null 就不写；any 是三颗里有没有一颗露出来（没有时浮层最底下那句换回第一步的「这里只显示状态」）。
  * ui：{armed: 「开始」点了第一下, pending: 刚点出去、后端还没回话的动作, offline: 和本地服务断开,
@@ -613,18 +623,23 @@ function flashNotReadyNote(page) {
  *   还没发的重试作废）；note 写 flashRetryingNote，连不上、读不出（那一排一颗按钮都不出）时也写；
  * - 断线：三颗都不能点（点了也发不出去）；
  * - 发布闸关着（gated）：「开始」「继续」都不出（后端这时也不发），只剩停止和打开；版本那句只说停止。
- *   gated 也记在 view 里，最底下那句跟着换（renderFlashControls） */
+ *   gated 也记在 view 里，最底下那句跟着换（renderFlashControls）；
+ * - 没找到 .app（app_found 是 false）：「打开」不出；没在运行、读不出时 note 写 flashNotFoundNote（停止在等着再试时
+ *   写重试那句：那句要紧）。正在查看时不写（还不知道它开没开） */
 function flashControlView(st, ui) {
   ui = ui || {};
   var view = { start: { shown: false, disabled: true, text: L("开始", "Start") },
                stop: { shown: false, disabled: true, text: L("停止", "Stop") },
                resume: { shown: false, disabled: true, text: L("继续", "Resume") },
-               note: null, any: false, gated: !!ui.gated };
+               open: { shown: true }, note: null, any: false, gated: !!ui.gated };
   if (!st || typeof st !== "object") return view;
+  var appFound = st.app_found !== false;
+  view.open.shown = appFound;
   var ctl = flashActiveControl(st);
   var retrying = ctl && ctl.phase === "retrying" ? ctl.action : null;
   if (st.conn !== "ok") {
     if (retrying) view.note = flashRetryingNote();
+    else if (!appFound && st.conn !== "checking") view.note = flashNotFoundNote();
     return view;
   }
   if (flashControlTooOld(st)) {
@@ -943,8 +958,9 @@ function flashTick(countdowns, now) {
   (countdowns || []).forEach(function (c) { c.el.textContent = flashCountdownText(c.kind, c.at, now); });
 }
 
-/* 浮层顶部那一排按 flashControlView 的结果画（发布闸关着时最底下那句只说停止）：els 是 {start, stop, resume, note, desc}（index.html 的 #flash-start、
- * #flash-stop、#flash-resume、#flash-ctl-note、#flash-desc）。按钮只改显隐、禁用和字，节点本身不换（焦点、监听都在上面）。
+/* 浮层顶部那一排按 flashControlView 的结果画（发布闸关着时最底下那句只说停止）：els 是 {start, stop, resume, open, note, desc}
+ * （index.html 的 #flash-start、#flash-stop、#flash-resume、#flash-open、#flash-ctl-note、#flash-desc）。按钮只改显隐、禁用和字，
+ * 节点本身不换（焦点、监听都在上面）。「打开闪购助手」只改显隐：它的禁用由 app.js 按断线管。
  * 浮层最底下那句：三颗里有一颗露着就写「这里只能开始、停止和继续……」，一颗都没有时换回第一步那句（不和版本句打架） */
 function renderFlashControls(doc, els, view) {
   ["start", "stop", "resume"].forEach(function (k) {
@@ -955,6 +971,7 @@ function renderFlashControls(doc, els, view) {
     el.disabled = !b.shown || !!b.disabled;
     if (el.textContent !== b.text) el.textContent = b.text;
   });
+  if (els.open && view.open) els.open.classList.toggle("hidden", !view.open.shown);
   if (els.note) {
     flashFillLine(doc, els.note, view.note);
     els.note.classList.toggle("hidden", !view.note);
@@ -988,7 +1005,7 @@ if (typeof module !== "undefined" && module.exports) {
     flashWaitingRenewal, flashRank, flashPosition, flashSortProducts, flashSummaryParts, flashSummary, flashProductParts,
     flashRowsToShow, flashMoreText, flashAlertsToShow,
     flashVersionParts, flashVersionOlder, flashControlTooOld, flashControlDone, flashActiveControl, flashStarting, flashStartingText,
-    flashWaitingText, flashNotReadyNote, flashRetryingNote, flashControlView, flashStartClick, flashNewArmId, flashOwnErrorText,
+    flashWaitingText, flashNotReadyNote, flashRetryingNote, flashNotFoundNote, flashControlView, flashStartClick, flashNewArmId, flashOwnErrorText,
     flashRefusedText, flashStopBlockedText, flashResultLine, FLASH_STOP_RETRY_SEC, FLASH_STOP_RETRY_GAP_SEC,
     renderFlashPanel, flashTick, renderFlashControls, renderFlashNote,
   };

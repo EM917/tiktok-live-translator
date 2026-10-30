@@ -159,6 +159,7 @@ UI_NAMES = {
     "本场品牌": "Brand",
     "打开词表文件夹": "Open Brands Folder",
     "打开 brands 文件夹": "Open Brands Folder",
+    "打开闪购助手": "Open Flash Sale Helper",
     # 「完全磁盘访问权限」那几步旁边的按钮（browser_login.FDA_BUTTON_LABELS，只在 macOS 上有）
     "打开完全磁盘访问设置": "Open Full Disk Access Settings",
     "在访达里选中 Python": "Show Python in Finder",
@@ -169,6 +170,7 @@ UI_NAMES = {
     "完全磁盘访问权限": "Full Disk Access",
     "允许": "Allow",
     "始终允许": "Always Allow",
+    "应用程序": "Applications",
 }
 
 # 产品名映射：中文臂含前者，英文臂必须含后者

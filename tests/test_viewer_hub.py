@@ -485,6 +485,8 @@ def test_inbound_messages_never_reach_on_control():
         text({"type": "dismiss_incident", "id": "session:clock_gap", "ts": 1790000000.0}),
         # 顶栏「闪购」浮层里的「打开闪购助手」：只有中控本机能点
         text({"type": "open_flash_helper"}),
+        # 打开这个浮层时再找一次闪购助手装在哪（只看本机文件系统）：手机上没有这个浮层
+        text({"type": "flash_find"}),
         # 同一个浮层里的开始、停止、继续（会真的动闪购助手）：只有中控本机能点
         text({"type": "flash_control", "action": "start"}),
         text({"type": "flash_control", "action": "stop"}),
@@ -540,6 +542,7 @@ def test_a_lone_retranslate_frame_does_not_trip_the_flood_cap():
     {"type": "dismiss_incident", "id": "session:clock_gap", "ts": 1790000000.0},   # 提示条的 ×：只有本机
     {"type": "open_flash_helper"},                  # 「打开闪购助手」：只有本机控制面
     {"type": "open_flash_helper", "id": 7},         # 凑成 {type, id} 的形状也不行
+    {"type": "flash_find"},                         # 打开闪购浮层时再找一次：只有本机控制面
     {"type": "flash_control", "action": "stop"},    # 闪购的开始、停止、继续：只有本机控制面
     {"type": "flash_control", "id": 7},             # 凑成 {type, id} 的形状也不行
 ])
