@@ -319,7 +319,10 @@ is the app reading its own folder. Whether steps 1 and 2 are enough for a double
 hasn't been measured. If the dialog comes back, click Open in Terminal, which runs Start.command
 from the same folder in Terminal, or double-click Start.command yourself; that worked on the same
 Mac. The buttons only open System Settings or Terminal, and the app never changes the setting
-itself. A `tools/find_python.sh` that can be read but doesn't contain the Python check (for example
+itself. This dialog appears only when the system returns "Operation not permitted". When it
+returns something else, for example "Permission denied", the app says which file it couldn't read
+and what the system returned, and suggests Start.command or a fresh download instead of these
+steps. A `tools/find_python.sh` that can be read but doesn't contain the Python check (for example
 a cut-off download) now gets a message that the project folder is incomplete, not a request to
 install Python.
 

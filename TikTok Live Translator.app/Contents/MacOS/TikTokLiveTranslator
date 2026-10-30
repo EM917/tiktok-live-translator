@@ -56,12 +56,15 @@ ask_folder() {
             -e 'end run' "$1" "$2" 2>/dev/null
 }
 
-# 程序文件夹里的文件在、却打不开：说读不了、照抄系统的原话。原话是这两种（权限）时给系统设置那几步和两个按钮，
-# 别的原话只说读不了、给 Start.command 和重新下载。不再提 Python：这时根本还没去找它。$1=文件 $2=原话
+# 程序文件夹里的文件在、却打不开：说读不了、照抄系统的原话。不再提 Python：这时根本还没去找它。$1=文件 $2=原话
+# 只有原话是 Operation not permitted 时才给系统设置那几步和两个按钮：10-29 那台机器上系统返回的就是这一句，
+# sandbox-exec 拒绝打开时也是它。别的原话只说读不了、给 Start.command 和重新下载。Permission denied 也归这边：
+# chmod 000 做出来的就是它，那是文件自己的读写权限，「文件与文件夹」「完全磁盘访问权限」的开关管不着，
+# 照那几步做也不会好
 cannot_read() {
   local zh_folder en_folder zh en rc
   case "$2" in
-    "Operation not permitted"|"Permission denied") ;;
+    "Operation not permitted") ;;
     *)
       say "读不了本程序文件夹里的文件（$1），系统返回「$2」。${NL}${NL}可以先双击同一文件夹里的 Start.command，在「终端」里打开本程序。还是不行的话，重新下载完整项目。" \
           "Couldn’t read a file in the app’s folder ($1). The system returned “$2”.${NL}${NL}You can double-click Start.command in the same folder to open the app in Terminal instead. If that doesn’t work either, download a fresh copy of the complete project."

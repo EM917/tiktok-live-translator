@@ -208,6 +208,8 @@ Start.command 启动一切正常；从访达双击或从聚焦搜索打开 app�
 那边加的是读浏览器数据的 Python 解释器，这里加的是读自己文件夹的这个 app。第 1、2 步做完双击能不能启动，还没有
 实测过。对话框又出现时，点「先用终端打开」（用「终端」运行同一文件夹里的 Start.command），或者自己双击
 Start.command——在同一台 Mac 上这样能用。这几个按钮只打开「系统设置」或「终端」，程序绝不自己改这项设置。
+只有系统返回 Operation not permitted 时才弹这个对话框；返回别的（比如 Permission denied）时，程序只说哪个文件
+读不了、系统返回了什么，给的是 Start.command 和重新下载这两条路，不给上面这几步。
 另外，`tools/find_python.sh` 读得到、里面却没有探测 Python 的那一段（比如下载不完整）时，现在说项目文件
 不完整，不再叫人装 Python。
 

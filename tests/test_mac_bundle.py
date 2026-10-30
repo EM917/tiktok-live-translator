@@ -312,8 +312,8 @@ FOLDER_SWITCHES = {
     "Downloads": ("「“下载”文件夹」", "its Downloads Folder switch"),
     None: ("本程序所在位置对应的那一项", "the switch under it for the place the app is in"),
 }
-# 打不开、系统返回的又不是 Operation not permitted / Permission denied：只说读不了和原话，不给系统设置那几步
-# （chmod 和 sandbox-exec 都只做得出这两种，这一句只查文字本身）
+# 打不开、系统返回的又不是 Operation not permitted：只说读不了和原话，不给系统设置那几步。Permission denied
+# 也走这一句（chmod 000 做得出来）：那是文件自己的读写权限，系统设置里的开关管不着
 FILE_UNREADABLE = (
     "读不了本程序文件夹里的文件（{file}），系统返回「{why}」。\n\n"
     "可以先双击同一文件夹里的 Start.command，在「终端」里打开本程序。还是不行的话，重新下载完整项目。",
@@ -482,52 +482,69 @@ def _unreadable(path):
     return path
 
 
+def _deny_reading(root, *, only=None):
+    """sandbox-exec 拒掉读文件内容（file-read-data），stat 照样能做：打开时系统返回 Operation not permitted，
+    和 10-29 那台机器上一样（系统的隐私保护走的是同一个 Sandbox 机制）。默认拒整个项目文件夹、只留 app 自己的
+    包读得到——那台机器上启动脚本本身读得到，旁边的文件读不到；only 给了就只拒项目里的这一个文件。
+    文件夹权限那个对话框只有这样做得出来：macOS 上用不了 sandbox-exec 时算失败，不悄悄跳过（跳过就等于没测）。"""
+    sandbox = shutil.which("sandbox-exec")
+    assert sandbox, "macOS 上找不到 sandbox-exec"
+    probe = subprocess.run([sandbox, "-p", "(version 1)(allow default)", "/usr/bin/true"], capture_output=True,
+                           timeout=30)
+    assert probe.returncode == 0, probe.stderr.decode("utf-8", "replace")
+    real = root.resolve()
+    if only:
+        rules = '(deny file-read-data (literal "{}"))'.format(real / only)
+    else:
+        rules = '(deny file-read-data (subpath "{}"))(allow file-read-data (subpath "{}"))'.format(real, real / "app")
+    return [sandbox, "-p", "(version 1)(allow default)" + rules]
+
+
 @needs_unreadable
 @pytest.mark.parametrize("name", ["main.py", "tools/find_python.sh"])
-def test_a_file_that_is_there_but_unreadable_gets_the_folder_dialog_not_python_org(tmp_path, name):
+def test_a_file_that_is_there_but_unreadable_says_so_instead_of_sending_you_to_python_org(tmp_path, name):
     """2026-10-29：`. tools/find_python.sh` 读不了，find_python 没定义，以前弹「需要先安装 Python」、打开
-    python.org。现在 main.py 和 find_python.sh 都先真的打开一次，读不了就弹文件夹权限那一个对话框。"""
+    python.org。现在 main.py 和 find_python.sh 都先真的打开一次，读不了就照实说哪个文件读不了、系统返回了什么。
+    chmod 000 时系统返回 Permission denied：那是文件自己的读写权限，系统设置里的开关管不着，所以不给
+    「文件与文件夹」那几步和按钮，什么也不打开。"""
     root = _project(tmp_path, main_py=True, finder=True)
     _unreadable(root / name)
     proc, calls = _run_launcher(tmp_path, root.joinpath(*APP_LAUNCHER))
     assert proc.returncode == 1, proc.stderr.decode("utf-8", "replace")
-    assert calls == [_ask(root, "Permission denied")]
-
-
-@needs_unreadable
-@pytest.mark.parametrize("folder", ["Desktop", "Documents", "Downloads"])
-def test_the_dialog_names_the_switch_for_the_protected_folder(tmp_path, folder):
-    """「文件与文件夹」里每个 app 下面是「“桌面”文件夹」这样的开关：程序在哪个文件夹里就点哪一个的名。"""
-    home_folder = tmp_path / folder
-    home_folder.mkdir()
-    root = _project(home_folder, main_py=True, finder=True)
-    _unreadable(root / "main.py")
-    proc, calls = _run_launcher(tmp_path, root.joinpath(*APP_LAUNCHER))
-    assert proc.returncode == 1
-    assert calls == [_ask(root, "Permission denied", folder)]
+    assert calls == [_say(FILE_UNREADABLE, file=str(root / name), why="Permission denied")]
 
 
 @on_macos
 @needs_bash
-def test_a_denial_like_the_one_on_the_new_mac(tmp_path):
-    """和 10-29 那台机器上一样的拒绝：stat 能做，打开读报 Operation not permitted（系统的隐私保护走的是
-    同一个 Sandbox 机制，sandbox-exec 拒掉 file-read-data 得到的就是它）。程序在桌面上。"""
-    sandbox = shutil.which("sandbox-exec")
-    if not sandbox or subprocess.run([sandbox, "-p", "(version 1)(allow default)", "/usr/bin/true"],
-                                     capture_output=True, timeout=30).returncode != 0:
-        pytest.skip("这里用不了 sandbox-exec")
+@pytest.mark.parametrize("only", [None, "main.py", "tools/find_python.sh"], ids=["folder", "main-py", "find-python"])
+def test_a_denial_like_the_one_on_the_new_mac(tmp_path, only):
+    """和 10-29 那台机器上一样的拒绝：stat 能做，打开读报 Operation not permitted。程序在桌面上。
+    整个文件夹读不了、只有 main.py 或只有 find_python.sh 读不了，都弹文件夹权限那一个对话框。"""
     desktop = tmp_path / "Desktop"
     desktop.mkdir()
     root = _project(desktop, main_py=True, finder=True)
-    real = root.resolve()
-    profile = '(version 1)(allow default)(deny file-read-data (literal "{}") (literal "{}"))'.format(
-        real / "main.py", real / "tools" / "find_python.sh")
-    proc, calls = _run_launcher(tmp_path, root.joinpath(*APP_LAUNCHER), wrap=[sandbox, "-p", profile])
+    proc, calls = _run_launcher(tmp_path, root.joinpath(*APP_LAUNCHER), wrap=_deny_reading(root, only=only))
     assert proc.returncode == 1, proc.stderr.decode("utf-8", "replace")
     assert calls == [_ask(root, "Operation not permitted", "Desktop")]
 
 
-@needs_unreadable
+@on_macos
+@needs_bash
+@pytest.mark.parametrize("folder", ["Desktop", "Documents", "Downloads", None],
+                         ids=["desktop", "documents", "downloads", "elsewhere"])
+def test_the_dialog_names_the_switch_for_the_protected_folder(tmp_path, folder):
+    """「文件与文件夹」里每个 app 下面是「“桌面”文件夹」这样的开关：程序在哪个文件夹里就点哪一个的名，
+    不在这三个里时不点名。"""
+    home_folder = tmp_path / (folder or "elsewhere")
+    home_folder.mkdir()
+    root = _project(home_folder, main_py=True, finder=True)
+    proc, calls = _run_launcher(tmp_path, root.joinpath(*APP_LAUNCHER), wrap=_deny_reading(root))
+    assert proc.returncode == 1, proc.stderr.decode("utf-8", "replace")
+    assert calls == [_ask(root, "Operation not permitted", folder)]
+
+
+@on_macos
+@needs_bash
 @pytest.mark.parametrize("answer, open_rc, rc, tail", [
     ("settings", 0, 1, lambda root: [["open", FILES_SETTINGS]]),
     # 「文件与文件夹」那一页打不开就退到「完全磁盘访问权限」那一页；也不成就照实说 open 返回了什么
@@ -541,10 +558,10 @@ def test_a_denial_like_the_one_on_the_new_mac(tmp_path):
 def test_the_folder_dialog_buttons_only_open_things(tmp_path, answer, open_rc, rc, tail):
     """按钮只打开系统设置那一页、或者用「终端」打开同一文件夹里的 Start.command，程序绝不自己改设置。"""
     root = _project(tmp_path, main_py=True, finder=True)
-    _unreadable(root / "tools" / "find_python.sh")
-    proc, calls = _run_launcher(tmp_path, root.joinpath(*APP_LAUNCHER), answer=answer, open_rc=open_rc)
+    proc, calls = _run_launcher(tmp_path, root.joinpath(*APP_LAUNCHER), answer=answer, open_rc=open_rc,
+                                wrap=_deny_reading(root))
     assert proc.returncode == rc, proc.stderr.decode("utf-8", "replace")
-    assert calls == [_ask(root, "Permission denied")] + tail(root)
+    assert calls == [_ask(root, "Operation not permitted")] + tail(root)
 
 
 @needs_bash
