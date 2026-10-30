@@ -507,7 +507,7 @@ Flash Sale。实测余量和 G10 场景在 `docs/i18n-style.md` §4.2。
 ## 11. 隔离
 
 - **手机同看**：`flash_sale`、`flash_control_result` 不在 `app/viewer.py` 的 ALLOW 里，另外显式写进 DENY；
-  `replay_snapshot` 只挑固定几个键。手机发不进 `flash_control`、`open_flash_helper`（入站只认 retranslate）。
+  `replay_snapshot` 只挑固定几个键。手机发不进 `flash_control`、`open_flash_helper`、`flash_find`（入站只认 retranslate）。
 - **浮窗**：两种消息都不在 `app/server.py` 的 `FLOAT_TYPES` / `FLOAT_CONFIG_KEYS` 里；浮窗页的入站一律丢弃；
   `float.html` 不加载 flash.js。
 - **报警（CLAUDE.md 第六条）**：闪购的提醒只走这颗按钮的颜色和这个浮层，不借 incident、status、顶部提示条、

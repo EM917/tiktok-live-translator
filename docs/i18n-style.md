@@ -330,6 +330,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 在看人数（live-ui.js:16、app.js:1869、viewer.py:409） | {n} watching | {n} watching（不变形） |
 | 窗口标题（alerts.js:9、window_attention.py:20） | ({n}) Possible Banned Terms · TikTok Live Translator | 同左（标签式写法，不变形） |
 | flash.js flashResultLine 再试过的停止（§3 K #178） | Tried once. | Tried {n} times.（n 从 2 起，one 用不到） |
+| pipeline_flash.py `_flash_open_failure_text` open 失败时的系统错误号（§3 K #165） | Couldn’t open Flash Sale Helper (open returned {rc}, system error {codes}). … | Couldn’t open Flash Sale Helper (open returned {rc}, system errors {codes}). …（{codes} 最多 3 个，用 `, ` 隔开） |
 
 ### 2.4 时间与日期
 
