@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=53">
+  <link rel="stylesheet" href="/static/style.css?v=59">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -389,11 +389,21 @@
            文字由 app.js 写（UNRECOGNIZED_INPUT_MSG），这里留空 -->
       <p id="room-input-error" class="field-error hidden" role="alert"></p>
 
+      <!-- 语音模型还没下载时的一行（2026-10-29 用户选的 launch-2 A）：自检「语音识别」一行的「现在下载」收在
+           「设置 > 启动自检」里，只有提醒时整行折叠，新装机的中控开播前看不到，第一次点「开始翻译」才开始下 3.1 GB。
+           app.js renderAsrHint 看自检那一行带不带 download_asr_model：带着才出现，下好后服务端重发那一行就自己消失。
+           按钮发同一条指令。连接中、直播中整个开始面板藏着，这一行跟着藏。文字由 app.js 写，这里留空 -->
+      <div id="asr-model-hint" class="sp-model-hint hidden">
+        <span id="asr-model-hint-text" class="sp-model-hint-text"></span>
+        <button id="asr-model-hint-btn" class="btn small" type="button" aria-describedby="asr-model-hint-text"
+                data-en="Download Now">现在下载</button>
+      </div>
+
       <!-- 原来的两段灰字，收进「?」：只有少数场景用得上，不该常驻首屏 -->
       <div id="input-help" class="sp-help hidden">
         <p data-en="You can also paste a .flv or .m3u8 stream URL.">也可以直接粘贴 .flv / .m3u8 流地址。</p>
         <p data-en-html="For some live streams, TikTok doesn’t provide a stream URL to the app. In that case, <b>paste the live link and the .flv URL from your browser together</b>, separated by a space. The link is used for comments and glossaries, and the .flv URL for audio.">个别直播间 TikTok 不把流地址给程序。这时把<b>直播间链接和浏览器里的 .flv 地址一起粘进来</b>（中间空格隔开）：前者管弹幕和词表，后者作音频源。</p>
-        <p data-en="The speech model downloads the first time you start. Progress appears here.">首次识别需下载模型，进度会显示在页面上。</p>
+        <p data-en="The speech model downloads the first time you click Start, and captions wait until it finishes. Until it’s downloaded, Download Now appears below the input field. Click it before you go live.">识别模型在第一次点「开始翻译」时下载，字幕要等它下完。还没下载时，输入框下面会出现「现在下载」，开播前点它先下好。</p>
       </div>
 
       <div class="sp-options">
@@ -524,6 +534,16 @@
                 <input id="engine-key" type="password" class="hidden"
                        spellcheck="false" autocomplete="off" placeholder="粘贴 API 密钥" data-en-placeholder="Paste API key">
                 <button id="engine-save" class="btn" data-en="Save">保存</button>
+              </div>
+              <!-- 只在选 Claude 时显示：不绑工作区的 Anthropic 密钥要带工作区 ID（app/translator.py WORKSPACE_ENV）。
+                   它不是密钥，框里显示的就是在用的那个；留空就不带 -->
+              <div id="engine-workspace-row" class="engine-row engine-workspace-row hidden">
+                <input id="engine-workspace" type="text" spellcheck="false" autocomplete="off" autocapitalize="off"
+                       placeholder="工作区 ID（选填，wrkspc_ 开头）"
+                       data-en-placeholder="Workspace ID (optional, starts with wrkspc_)"
+                       aria-label="Claude 工作区 ID" data-en-aria-label="Claude workspace ID"
+                       title="只有建密钥时没选工作区的才要填，Claude Console 的 Workspaces 页面上有；绑了工作区的密钥留空即可"
+                       data-en-title="Only needed for an API key that isn’t scoped to a workspace. The ID is listed on the Workspaces page in the Claude Console. Leave it blank for a key scoped to a workspace.">
               </div>
               <div id="engine-note" class="engine-note"
                    data-en="Uses a local model: fully offline, unlimited, and captions never leave this computer.">
@@ -842,6 +862,6 @@
   <script src="/static/live-ui.js?v=8"></script>
   <script src="/static/guard.js?v=6"></script>
   <script src="/static/flash.js?v=1"></script>
-  <script src="/static/app.js?v=82"></script>
+  <script src="/static/app.js?v=89"></script>
 </body>
 </html>

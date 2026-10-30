@@ -26,12 +26,15 @@ const TEXT = {
   zh: {
     network: (m) => "本机连不上 www.tiktok.com，已 " + m + " 分钟没有监听，网络恢复后自动重连",
     resolving: "正在解析直播流地址…",
-    // app/pipeline.py browser_only_message：Safari 被系统拒绝读取 + Chrome 没登录（专家量到中文 5 行的那种）
+    // app/pipeline.py browser_only_message：Safari 被系统拒绝读取 + Chrome 没登录（从 .app 启动：没有「终端」那几句）
     blocked: "TikTok 不把这个直播间的流地址给程序（代码 4003110），已自动重试 2 次，原因 TikTok 不说明；有时过一会儿再点「开始翻译」就好，有时整场都不给。\n" +
       "借用浏览器里的 TikTok 登录时观察到——Safari：系统拒绝读取；Chrome：能读取，没有 TikTok 登录 cookie（sessionid 等）。\n" +
-      "系统不允许本程序读取浏览器数据。到「系统设置」→「隐私与安全性」→「完全磁盘访问权限」，点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开（每个路径各做一遍）：\n" +
+      "系统不允许本程序读取浏览器数据。照下面三步给 Python 打开「完全磁盘访问权限」：\n" +
+      "1. 打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。\n" +
+      "2. 点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开（每个路径各做一遍）：\n" +
       "「/opt/homebrew/bin/python3.14」\n「/Users/demo user/miniconda3/bin/python3.13」\n" +
-      "列表里显示的名字是 python3.14、python3.13，不是本程序的名字。如果列表里已经有这一项、开关也开着，先选中它点「−」删掉，再按上面的步骤加一次。用 Start.command 启动的话把「终端」也加进去。然后完全退出程序再打开。\n" +
+      "列表里显示的名字是 python3.14、python3.13，不是本程序的名字。\n3. 按 ⌘Q 完全退出本程序，再打开它。\n" +
+      "列表里已经有它、开关也开着还是这样：选中它点「−」删掉，再做一次第 2 步。\n" +
       "这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。\n" +
       // 权限范围之后的事各自另起一行（审查第 1 轮）
       "在 Chrome（或 Safari）里登录 TikTok 后再试。\n想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来（中间空格隔开），一次约两周有效。",
@@ -47,8 +50,8 @@ const TEXT = {
       "一直这样的话，点「停止」后可以在「设置 > 翻译引擎」里换一个引擎。",
     clockGap: "电脑时钟跳了一下",
     // app/browser_login.py no_login_notice：Safari 被系统拒绝读取（带完全磁盘访问权限那几步，分行）
-    loginNotice: "程序没有读到浏览器里的 TikTok 登录——Safari：系统拒绝读取。有的直播间 TikTok 只把流地址给已登录的观众，读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听，监听不会因此停下。请在 Safari 里登录 TikTok。\n系统不允许本程序读取浏览器数据。到「系统设置」→「隐私与安全性」→「完全磁盘访问权限」，点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开（每个路径各做一遍）：\n「/opt/homebrew/bin/python3.14」\n「/Users/demo user/miniconda3/bin/python3.13」\n列表里显示的名字是 python3.14、python3.13，不是本程序的名字。如果列表里已经有这一项、开关也开着，先选中它点「−」删掉，再按上面的步骤加一次。用 Start.command 启动的话把「终端」也加进去。然后完全退出程序再打开。\n这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。\n（这些步骤在自检「浏览器登录态」一行里也有。）读到登录后这条提示自动消失。",
-    loginShort: "程序没有读到浏览器里的 TikTok 登录——Safari：能读取，没有 TikTok 登录 cookie（sessionid 等）。有的直播间 TikTok 只把流地址给已登录的观众，读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听，监听不会因此停下。请在 Safari 里登录 TikTok。读到登录后这条提示自动消失。",
+    loginNotice: "解析流地址时，登录优先这一步只读 Safari 里的 TikTok 登录——Safari：系统拒绝读取。照下面三步给 Python 打开「完全磁盘访问权限」：\n1. 打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。\n2. 点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开（每个路径各做一遍）：\n「/opt/homebrew/bin/python3.14」\n「/Users/demo user/miniconda3/bin/python3.13」\n列表里显示的名字是 python3.14、python3.13，不是本程序的名字。\n3. 按 ⌘Q 完全退出本程序，再打开它。\n列表里已经有它、开关也开着还是这样：选中它点「−」删掉，再做一次第 2 步。\n这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。\n有的直播间 TikTok 只把流地址给已登录的观众，这一步读到登录之前，这类直播间可能解析不出流地址；其余直播间照常监听，监听不会因此停下。读到登录后这条提示自动消失。",
+    loginShort: "解析流地址时，登录优先这一步只读 Safari 里的 TikTok 登录——Safari：能读取，没有 TikTok 登录 cookie（sessionid 等）。有的直播间 TikTok 只把流地址给已登录的观众，这一步读到登录之前，这类直播间可能解析不出流地址；其余直播间照常监听，监听不会因此停下。请在 Safari 里登录 TikTok。读到登录后这条提示自动消失。",
   },
   en: {
     network: (m) => "This computer can’t reach www.tiktok.com. Nothing has been monitored for " + m +
@@ -56,9 +59,12 @@ const TEXT = {
     resolving: "Getting the stream URL…",
     blocked: "TikTok didn’t provide a stream URL for this live stream (code 4003110). Retried 2 times. TikTok doesn’t say why. Sometimes it works if you click Start again a little later. Sometimes it doesn’t work for the whole stream.\n" +
       "Looked for a TikTok sign-in in your browsers. Safari: macOS didn’t allow access; Chrome: readable, but no TikTok sign-in cookie (sessionid or similar).\n" +
-      "macOS didn’t allow the app to read browser data. Go to System Settings > Privacy & Security > Full Disk Access and click +. In the file window, press ⌘⇧G, paste the path below, press Return, click Open, and turn on its switch (do this for each path):\n" +
+      "macOS didn’t allow the app to read browser data. Follow these three steps to turn on Full Disk Access for Python:\n" +
+      "1. Open System Settings > Privacy & Security > Full Disk Access.\n" +
+      "2. Click +. In the file window, press ⌘⇧G, paste the path below, press Return, click Open, and turn on its switch (do this for each path):\n" +
       "“/opt/homebrew/bin/python3.14”\n“/Users/demo user/miniconda3/bin/python3.13”\n" +
-      "The list shows python3.14, python3.13, not the app’s name. If it’s already in the list with its switch on, select it, click −, and add it again with the steps above. If you start the app with Start.command, add Terminal too. Then quit the app completely and open it again.\n" +
+      "The list shows python3.14, python3.13, not the app’s name.\n3. Press ⌘Q to quit the app completely, then open it again.\n" +
+      "If it’s already in the list with its switch on and you still see this, select it, click −, and do step 2 again.\n" +
       "This permission goes to the Python interpreter, not just this app, so any script it runs can read protected data on this computer. When you no longer need the TikTok sign-in from your browser, you can turn its switch off in the same list.\n" +
       // 最后一段的英文开头带一个空格（app/pipeline.py browser_only_message），横幅按行画时去掉
       "Sign in to TikTok in Chrome (or Safari), then try again.\n To watch now, paste the live link and the .flv URL from your browser together, separated by a space. A .flv URL usually works for about two weeks.",
@@ -71,8 +77,8 @@ const TEXT = {
       "Speech recognition isn’t affected. If this continues, you can choose another engine in " +
       "Settings > Translation Engine after you click Stop.",
     clockGap: "The computer clock jumped",
-    loginNotice: "The app didn’t find a TikTok sign-in in your browsers. Safari: macOS didn’t allow access. For some live streams, TikTok provides the stream URL only to signed-in viewers, so those live streams may not get a stream URL until a sign-in is found. Other live streams are monitored as usual. Sign in to TikTok in Safari.\nmacOS didn’t allow the app to read browser data. Go to System Settings > Privacy & Security > Full Disk Access and click +. In the file window, press ⌘⇧G, paste the path below, press Return, click Open, and turn on its switch (do this for each path):\n“/opt/homebrew/bin/python3.14”\n“/Users/demo user/miniconda3/bin/python3.13”\nThe list shows python3.14, python3.13, not the app’s name. If it’s already in the list with its switch on, select it, click −, and add it again with the steps above. If you start the app with Start.command, add Terminal too. Then quit the app completely and open it again.\nThis permission goes to the Python interpreter, not just this app, so any script it runs can read protected data on this computer. When you no longer need the TikTok sign-in from your browser, you can turn its switch off in the same list.\n(These steps are also in the Browser Login row of Settings > Startup Check.) This notice disappears once a sign-in is found.",
-    loginShort: "The app didn’t find a TikTok sign-in in your browsers. Safari: readable, but no TikTok sign-in cookie (sessionid or similar). For some live streams, TikTok provides the stream URL only to signed-in viewers, so those live streams may not get a stream URL until a sign-in is found. Other live streams are monitored as usual. Sign in to TikTok in Safari. This notice disappears once a sign-in is found.",
+    loginNotice: "When looking up the stream URL, the app first reads the TikTok sign-in from Safari only. Safari: macOS didn’t allow access. Follow these three steps to turn on Full Disk Access for Python:\n1. Open System Settings > Privacy & Security > Full Disk Access.\n2. Click +. In the file window, press ⌘⇧G, paste the path below, press Return, click Open, and turn on its switch (do this for each path):\n“/opt/homebrew/bin/python3.14”\n“/Users/demo user/miniconda3/bin/python3.13”\nThe list shows python3.14, python3.13, not the app’s name.\n3. Press ⌘Q to quit the app completely, then open it again.\nIf it’s already in the list with its switch on and you still see this, select it, click −, and do step 2 again.\nThis permission goes to the Python interpreter, not just this app, so any script it runs can read protected data on this computer. When you no longer need the TikTok sign-in from your browser, you can turn its switch off in the same list.\nFor some live streams, TikTok provides the stream URL only to signed-in viewers, so those live streams may not get a stream URL until this step finds a sign-in. Other live streams are monitored as usual. This notice disappears once a sign-in is found.",
+    loginShort: "When looking up the stream URL, the app first reads the TikTok sign-in from Safari only. Safari: readable, but no TikTok sign-in cookie (sessionid or similar). For some live streams, TikTok provides the stream URL only to signed-in viewers, so those live streams may not get a stream URL until this step finds a sign-in. Other live streams are monitored as usual. Sign in to TikTok in Safari. This notice disappears once a sign-in is found.",
   },
 };
 
@@ -312,7 +318,7 @@ for (const lang of ["zh", "en"]) {
     const rest = () => span().children.find((el) => el.cls.includes("incident-rest"));
     const lines = W.loginNotice.split("\n");
     const head = () => span().childNodes.filter((n) => n.nodeType === 3).map((n) => n.textContent).join("");
-    assert.equal(head(), lines[0], "第一行：看到了什么、影响哪类直播间、在 Safari 里登录");
+    assert.equal(head(), lines[0], "第一行：登录优先那一步看到了什么、授权那几步的头一句");
     assert.equal(more().textContent, W.more);
     assert.equal(more().getAttribute("aria-expanded"), "false");
     assert.equal(shown(rest()), false, "其余几行折着");

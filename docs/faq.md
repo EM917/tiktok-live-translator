@@ -55,12 +55,21 @@ Full Disk Access. The entry to add is **not** this .app: the app is a launcher
 script that hands over to a Python interpreter, and macOS records the permission
 against the interpreter file's path (measured 2026-09-17 on macOS 27: the TCC
 log shows `identifier_type=Path` with a `python3.x` path and never mentions the
-bundle). The Browser Login row and the error message print the exact path(s) for
-your machine. Open System Settings → Privacy & Security → Full Disk Access,
-press "+", press ⌘⇧G in the file picker, paste the path, press Return, click
-Open, and switch the new entry on; repeat for each path shown. The list shows
-the entry as `python3.x`, not under the app's name. Add Terminal too if you
-launch with Start.command. Then quit the app completely and reopen it. Both
+bundle). The notice at the top of the window after you click Start, the error
+message, and this row (when no browser has a TikTok sign-in) print the exact
+path(s) for your machine. Three steps: 1. open System Settings → Privacy &
+Security → Full Disk Access; 2. press "+", press ⌘⇧G in the file picker, paste
+the path, press Return, click Open, and switch the new entry on, once for each
+path shown (the list shows the entry as `python3.x`, not under the app's name);
+3. press ⌘Q to quit the app completely and reopen it. Only if you start the app
+from a terminal (for example with Start.command), add Terminal
+(`/System/Applications/Utilities/Terminal.app`) the same way in step 2, and
+if macOS asks to quit and reopen Terminal, do that before starting the app
+again. After step 2 you can click Check Again on the notice or on this row:
+the app looks once more right away (it only checks whether the cookie store
+can be read, without decrypting anything) and says whether it can read it now
+or whether you still need step 3. While the notice is showing, switching back
+to the app window from System Settings does the same. Both
 launchers start the app with the Python that built its environment (`.venv`)
 while that Python is still there at the same version, so installing or
 upgrading a different Python (for example Homebrew pulling in a newer
@@ -68,8 +77,7 @@ upgrading a different Python (for example Homebrew pulling in a newer
 Python itself is upgraded, moved or removed, or when the environment is
 rebuilt; the row then shows the new one. With an unchanged path, the entry can
 also be in the list with its switch on while the row still says macOS didn't
-allow access. In that case select the entry, click −, and add it again with the
-steps above. The permission belongs to the Python
+allow access. In that case select the entry, click −, and do step 2 again. The permission belongs to the Python
 interpreter, not just this app: any script run with that Python can read
 protected data on this computer, such as Mail, Messages and Safari data. When
 you no longer need the TikTok sign-in from your browser, switch the entry off in
@@ -85,7 +93,12 @@ not come out of decryption; start again and, if a Keychain dialog asks for
 
 <a id="code-4003110"></a>**"TikTok didn't provide a stream URL for this live stream (code 4003110)."**
 That code is TikTok's generic refusal; the response carries no reason, and the
-app does not invent one. Before concluding anything, run the built-in check:
+app does not invent one. The app retries up to three times, each lookup taking
+about 40 seconds, and the page says which attempt is running. Meanwhile, open
+the live stream in your browser to check whether the streamer is live. If the
+message also says the lookup couldn't read the TikTok sign-in from Safari, the
+Full Disk Access steps are in the notice at the top. Before concluding anything,
+run the built-in check:
 
 ```bash
 python3 tools/diagnose_room.py @streamer --history-only   # your own logs only, no requests
@@ -104,7 +117,11 @@ two weeks.
 
 **The first start appears stuck downloading the recognition model.** The model
 is being retrieved from Hugging Face (large-v3 is approximately 3 GB). Progress
-is displayed on the page and this occurs only once.
+is displayed on the page and this occurs only once. To avoid the wait during a
+live stream, download it beforehand: click Download Now below the input field on
+the home page (the same button is on the Speech Recognition row in Settings →
+Startup Check). The button appears only while the model is missing and is
+unavailable while connecting or live.
 
 **All translations fail and captions show only the source language.** Google's
 free endpoint, which `auto` uses when no local model is installed,

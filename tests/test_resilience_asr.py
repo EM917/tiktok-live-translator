@@ -981,6 +981,34 @@ def test_the_published_asr_row_follows_load_failures_and_recoveries(monkeypatch,
     assert [c["name"] for c in server.config["selfcheck"]["checks"]] == ["语音识别", "磁盘空间"]
 
 
+def test_a_session_that_downloads_the_model_itself_takes_download_now_away(monkeypatch, tmp_path):
+    """没点「现在下载」就开播：模型是这一场加载时自己下好的（以前的路），加载成功、之前也没失败过。启动时
+    发布的那一行还带着「现在下载」，不刷新的话，停下后自检那一行和首页输入框下面那一行（web/app.js
+    renderAsrHint，launch-2 A）照旧说「语音模型还没下载」，点了才发现早就下好了。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    _asr_check_world(monkeypatch)
+    disk = {"cached": False}
+    monkeypatch.setattr(selfcheck, "_model_cached", lambda m, b: disk["cached"])
+
+    def download_and_load(**kw):
+        disk["cached"] = True               # 第一次加载时 create_transcriber 自己把模型下进缓存
+        return Working(**kw)
+
+    _load_world(monkeypatch, p, {"backend": "ct2", "model": "small", "device": "cpu",
+                                 "compute_type": "int8", "note": ""}, download_and_load)
+    startup = run(selfcheck.check_asr(p.args, p._asr_check_state()))
+    assert startup.get("action") == selfcheck.ACTION_DOWNLOAD_ASR
+    server.config["selfcheck"] = {"checks": [startup, selfcheck._check("磁盘空间", "ok", "fine")],
+                                  "summary": {}}
+
+    run(p._run_stream_inner(DIRECT_URL))
+    row = next(c for c in server.config["selfcheck"]["checks"] if c["name"] == "语音识别")
+    assert row["level"] == "ok" and "action" not in row, row
+    sent = server.of("selfcheck")[-1]["checks"]           # 页面收到的那一份：首页那一行跟着它消失
+    assert [c.get("action") for c in sent] == [None, None]
+    assert [c["name"] for c in sent] == ["语音识别", "磁盘空间"]
+
+
 @pytest.mark.parametrize("form", ["json", "plain"])
 def test_cpu_row_reads_the_mlx_giveup_marker_in_both_forms(monkeypatch, tmp_path, form):
     """记号在时启动不会再装 GPU 组件：「重开会自动补装」是假的，要给日期和真能做的事。"""

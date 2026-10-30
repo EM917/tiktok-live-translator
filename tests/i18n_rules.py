@@ -40,7 +40,7 @@ UI_FILES = (
     "app/instance.py", "app/localmodel.py",
     "app/macbrand.py", "app/native_dialog.py", "app/pipeline.py", "app/pipeline_disk.py",
     "app/pipeline_engine.py", "app/pipeline_flash.py", "app/pipeline_float.py", "app/pipeline_guard.py",
-    "app/pipeline_stream.py", "app/pipeline_transcript.py", "app/power.py",
+    "app/pipeline_asr_fetch.py", "app/pipeline_stream.py", "app/pipeline_transcript.py", "app/power.py",
     "app/resolver.py", "app/selfcheck.py",
     "app/transcript_export.py",
     "app/translator.py", "app/update_guard.py", "app/updater.py", "app/viewer.py",
@@ -205,8 +205,8 @@ RULE8_FAMILY = {
     "web/viewer.js": "*",
     "web/viewer.html": "*",
     "web/index.html": ("#input-help", "#guard-bar", "#guard-drawer", "#guard-card"),
-    "app/pipeline.py": ("browser_only_message", "_resolve_media", "_confirm_offline",
-                        "_host_wait", "_run_session", "_selfcheck_incident_text"),
+    "app/pipeline.py": ("browser_only_message", "_resolve_media", "_first_layer_refused_note",
+                        "_confirm_offline", "_host_wait", "_run_session", "_selfcheck_incident_text"),
 }
 
 # 禁用词例外：中文臂 → 理由。命中这里的对不查两级禁用词。
