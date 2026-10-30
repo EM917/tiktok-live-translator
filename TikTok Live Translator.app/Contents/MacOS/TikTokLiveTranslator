@@ -3,6 +3,10 @@
 # 由 Finder 启动时没有终端、PATH 也只有系统目录，所以 Python 必须按安装位置
 # 逐个探测，出问题时用系统对话框说话（print 没人看得见）。
 DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+APP="$(cd "$(dirname "$0")/../.." && pwd)"
+TITLE="TikTok 直播同传 · TikTok Live Translator"
+NL='
+'
 
 # 这里还没有 Python，读不到界面语言设置，老装机、新装机都可能走到：每个对话框都是
 # 中文一段、空一行、英文一段，不按系统语言挑（spec §8.5，用户 09-28 决定 4）。
@@ -10,7 +14,96 @@ DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 dialog() {  # $1=中文 $2=English $3=图标（note/caution，默认 note）$4=输入框里预填、可选中复制的一行（可省）
   local answer=""
   [ -z "$4" ] || answer=" default answer \"$4\""
-  osascript -e "display dialog \"$1\n\n$2\"$answer with title \"TikTok 直播同传 · TikTok Live Translator\" buttons {\"OK\"} default button 1 with icon ${3:-note}" >/dev/null 2>&1
+  osascript -e "display dialog \"$1\n\n$2\"$answer with title \"$TITLE\" buttons {\"OK\"} default button 1 with icon ${3:-note}" >/dev/null 2>&1
+}
+
+# 带路径、带系统原话的对话框：正文作为参数交给 AppleScript（on run argv），不拼进脚本，路径里有引号、
+# 反斜杠都原样显示。正文里段落之间是真的换行。$1=中文 $2=English
+say() {
+  osascript -e 'on run argv' \
+            -e "display dialog (item 1 of argv) with title \"$TITLE\" buttons {\"OK\"} default button 1 with icon caution" \
+            -e 'end run' "$1$NL$NL$2" >/dev/null 2>&1
+}
+
+# 读不读得到：[ -f ] 只看得到文件在不在（stat），读不读得到要真的打开一次——`.` 也是这样打开它的。
+# 读不到时打出系统的原话（bash 报错的最后一段，比如 Operation not permitted），返回 0；读得到返回 1
+unreadable() {
+  local err
+  err="$( { : < "$1"; } 2>&1 )" && return 1
+  err="${err##*: }"
+  printf '%s' "${err:-?}"
+}
+
+# 2026-10-29 新 Mac（macOS 26，程序在开着 iCloud 同步的桌面上）：从访达、聚焦搜索双击，[ -f main.py ] 和
+# [ -f tools/find_python.sh ] 都过了，`. tools/find_python.sh` 却报 Operation not permitted，find_python
+# 没定义，下面「找不到 Python」那一支弹了「需要先安装 Python」、还打开了 python.org——Python 早就装好了；
+# 同一台机器在终端里用 Start.command 启动一切正常。同一秒的系统日志里，sandboxd 为
+# kTCCServiceSystemPolicyDesktopFolder 向 TCC 请求授权，回的是错误（kTCCErrorDomain Code=2），屏幕上没有
+# 出现询问框。所以在用到文件夹里的文件之前先打开一次，读不了就照实说读不了，给两条路：系统设置那一页
+# （只打开，程序绝不自己改设置），或者用「终端」运行 Start.command。
+# 「文件与文件夹」「完全磁盘访问权限」这两步能不能让双击启动读到文件夹，没有实测过（实测就得改那台机器的
+# 系统设置）；「终端」那条路是 10-29 实测能用的。只说看到的和能做的（CLAUDE.md 第八条），不猜为什么。
+FILES_SETTINGS="x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders"
+FDA_SETTINGS="x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+
+# 带三个按钮的权限对话框。打出点了哪个：settings / terminal；点「关闭」、按 Esc、osascript 没成都什么也不打。
+# 按钮上的字中英并列，比较在 AppleScript 里做，交回来的只有 ASCII 的这两个词。$1=正文 $2=输入框里预填的一行
+ask_folder() {
+  osascript -e 'on run argv' \
+            -e "set b to button returned of (display dialog (item 1 of argv) default answer (item 2 of argv) with title \"$TITLE\" buttons {\"关闭 · Close\", \"先用终端打开 · Open in Terminal\", \"打开系统设置 · Open System Settings\"} default button 3 cancel button 1 with icon caution)" \
+            -e 'if b is "打开系统设置 · Open System Settings" then return "settings"' \
+            -e 'if b is "先用终端打开 · Open in Terminal" then return "terminal"' \
+            -e 'end run' "$1" "$2" 2>/dev/null
+}
+
+# 程序文件夹里的文件在、却打不开：说读不了、照抄系统的原话。不再提 Python：这时根本还没去找它。$1=文件 $2=原话
+# 只有原话是 Operation not permitted 时才给系统设置那几步和两个按钮：10-29 那台机器上系统返回的就是这一句，
+# sandbox-exec 拒绝打开时也是它。别的原话只说读不了、给 Start.command 和重新下载。Permission denied 也归这边：
+# chmod 000 做出来的就是它，那是文件自己的读写权限，「文件与文件夹」「完全磁盘访问权限」的开关管不着，
+# 照那几步做也不会好
+cannot_read() {
+  local zh_folder en_folder zh en rc
+  case "$2" in
+    "Operation not permitted") ;;
+    *)
+      say "读不了本程序文件夹里的文件（$1），系统返回「$2」。${NL}${NL}可以先双击同一文件夹里的 Start.command，在「终端」里打开本程序。还是不行的话，重新下载完整项目。" \
+          "Couldn’t read a file in the app’s folder ($1). The system returned “$2”.${NL}${NL}You can double-click Start.command in the same folder to open the app in Terminal instead. If that doesn’t work either, download a fresh copy of the complete project."
+      exit 1
+      ;;
+  esac
+  # 「文件与文件夹」里每个 app 下面的开关名，照抄系统设置（macOS 26 的 en / zh_CN）；不在这三个文件夹里时不点名
+  case "$DIR/" in
+    "$HOME/Desktop/"*)   zh_folder="「“桌面”文件夹」"; en_folder="its Desktop Folder switch" ;;
+    "$HOME/Documents/"*) zh_folder="「“文稿”文件夹」"; en_folder="its Documents Folder switch" ;;
+    "$HOME/Downloads/"*) zh_folder="「“下载”文件夹」"; en_folder="its Downloads Folder switch" ;;
+    *) zh_folder="本程序所在位置对应的那一项"; en_folder="the switch under it for the place the app is in" ;;
+  esac
+  zh="macOS 没让本程序读它所在的文件夹（$DIR），读文件时系统返回「$2」。${NL}${NL}照下面做一次：${NL}"
+  zh="${zh}1. 点「打开系统设置」，在「隐私与安全性」→「文件与文件夹」里找到本程序（TikTok Live Translator 或 TikTok 直播同传），打开它下面${zh_folder}的开关。${NL}"
+  zh="${zh}2. 列表里没有它时，到「隐私与安全性」→「完全磁盘访问权限」，点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面输入框里的路径后回车、点「打开」，再把它的开关打开。${NL}"
+  zh="${zh}3. 重新双击本程序。${NL}${NL}也可以点「先用终端打开」：用「终端」运行同一文件夹里的 Start.command，以后也可以自己双击它。本程序不会自己改系统设置。"
+  en="macOS didn’t let the app read the folder it’s in ($DIR). Reading a file there returned “$2”.${NL}${NL}Do this once:${NL}"
+  en="${en}1. Click Open System Settings. In Privacy & Security > Files & Folders, find TikTok Live Translator and turn on ${en_folder}.${NL}"
+  en="${en}2. If it isn’t in that list, go to Privacy & Security > Full Disk Access, click +, press ⌘⇧G in the file window, paste the path from the box below, press Return, click Open, and turn on its switch.${NL}"
+  en="${en}3. Double-click the app again.${NL}${NL}Or click Open in Terminal to run Start.command from the same folder in Terminal. You can also double-click Start.command yourself later. The app never changes system settings itself."
+  case "$(ask_folder "$zh$NL$NL$en" "$APP")" in
+    settings)
+      # 先开「文件与文件夹」那一页；打不开再开「完全磁盘访问权限」那一页；都不成就照实说 open 返回了什么
+      open "$FILES_SETTINGS" && exit 1
+      open "$FDA_SETTINGS" && exit 1
+      rc=$?
+      say "没能打开「系统设置」（open 返回 $rc）。可以自己打开「系统设置」→「隐私与安全性」→「文件与文件夹」。" \
+          "Couldn’t open System Settings (open returned $rc). You can open System Settings > Privacy & Security > Files & Folders yourself."
+      ;;
+    terminal)
+      # 交给「终端」：本程序由它启动，这个进程就此退出
+      open -a Terminal "$DIR/Start.command" && exit 0
+      rc=$?
+      say "没能用「终端」打开 Start.command（open 返回 $rc）。可以在访达里打开本程序所在的文件夹，双击 Start.command。" \
+          "Couldn’t open Start.command in Terminal (open returned $rc). You can open the app’s folder in Finder and double-click Start.command."
+      ;;
+  esac
+  exit 1
 }
 
 # App Translocation：从网上下载、还没在访达里挪过的 app，macOS 会把它单独放到一个随机的只读
@@ -36,6 +129,9 @@ if [ ! -f "$DIR/main.py" ]; then
          "Couldn’t find the app’s files.\n\nPut “TikTok Live Translator” back in the folder it came from, then double-click it again. You can drag it to the Dock, but don’t move it out of the folder." caution
   exit 1
 fi
+if why="$(unreadable "$DIR/main.py")"; then
+  cannot_read "$DIR/main.py" "$why"
+fi
 cd "$DIR"
 
 # find_python() 和 Start.command 共用一份，见 tools/find_python.sh。传项目根：有 .venv 时
@@ -45,8 +141,19 @@ if [ ! -f "$DIR/tools/find_python.sh" ]; then
          "The file tools/find_python.sh is missing. The project folder is incomplete, so the app can’t check for Python.\n\nPut “TikTok Live Translator” back in the folder it came from and double-click it again, or download a fresh copy of the complete project." caution
   exit 1
 fi
+if why="$(unreadable "$DIR/tools/find_python.sh")"; then
+  cannot_read "$DIR/tools/find_python.sh" "$why"
+fi
 . "$DIR/tools/find_python.sh"
+# 打得开、载入以后却没有 find_python（文件被截断、内容不对）：以前这里报 command not found，照样走进
+# 下面「需要先安装 Python」那一支
+if ! type find_python >/dev/null 2>&1; then
+  dialog "tools/find_python.sh 读得到，但里面没有探测 Python 的那一段。项目文件不完整，无法探测 Python。\n\n请重新下载完整项目。" \
+         "tools/find_python.sh can be read, but the part that checks for Python isn’t in it. The project folder is incomplete, so the app can’t check for Python.\n\nDownload a fresh copy of the complete project." caution
+  exit 1
+fi
 
+# 走到这里 find_python 确实跑过了：只有它真的找不到 Python 才说要装
 PY="$(find_python "$DIR")" || {
   open "https://www.python.org/downloads/"
   dialog "需要先安装 Python 3.10 或更新的版本才能运行本工具（免费，约 2 分钟）。\n\n已为你打开下载页面 python.org/downloads——下载 macOS 安装包并安装，装好后重新双击启动即可。" \

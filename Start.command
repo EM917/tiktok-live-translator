@@ -18,7 +18,25 @@ if [ ! -f "tools/find_python.sh" ]; then
   echo "  请重新下载/克隆完整的项目文件夹后再试。"
   exit 1
 fi
+# [ -f ] 只看得到文件在不在，读不读得到要真的打开一次：以前读不了时 find_python 没定义，下面那一支打印
+# 「未检测到 Python」、还打开 python.org，其实这一步根本没去找 Python（.app 启动器 2026-10-29 同一个问题，
+# 见那边的注释）。「终端」整个读不了这个文件夹时连本文件都打不开、走不到这里（sandbox-exec 拒掉整个文件夹
+# 的 file-read-data 实测：bash 在窗口里报「本文件路径: Operation not permitted」，退出码 126）；
+# 这里接住的是单个文件读不了的情况
+if ! err="$( { : < "tools/find_python.sh"; } 2>&1 )"; then
+  err="${err##*: }"
+  echo ""
+  echo "[读不了程序文件] tools/find_python.sh 打不开，系统返回「${err:-?}」，这一步没有去找 Python。"
+  echo "  请确认这个文件夹里的文件本账户读得到，或重新下载/克隆完整的项目文件夹后再试。"
+  exit 1
+fi
 . "tools/find_python.sh"
+if ! type find_python >/dev/null 2>&1; then
+  echo ""
+  echo "[文件不完整] tools/find_python.sh 里没有探测 Python 的那一段。"
+  echo "  请重新下载/克隆完整的项目文件夹后再试。"
+  exit 1
+fi
 
 PY="$(find_python "$PWD")" || {
   echo ""

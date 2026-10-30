@@ -74,7 +74,7 @@ You need macOS 12.3 or later, or Windows, and about 6 GB of free disk space. The
 
 4. Start the app.
 
-   - On macOS, double-click `TikTok Live Translator.app` and keep it inside its folder. If macOS says it cannot be opened, go to System Settings → Privacy & Security and click Open Anyway. On macOS 14 and earlier, right-click the app and choose Open instead. `Start.command` starts the app from a Terminal window instead.
+   - On macOS, double-click `TikTok Live Translator.app` and keep it inside its folder. If macOS says it cannot be opened, go to System Settings → Privacy & Security and click Open Anyway. On macOS 14 and earlier, right-click the app and choose Open instead. `Start.command` starts the app from a Terminal window instead. If double-clicking says macOS didn't let the app read the folder it's in, follow the steps in that dialog or use `Start.command`; 0.19.0 and earlier asked for Python here even with Python installed. See [the FAQ](docs/faq.md#folder-permission).
    - On Windows, double-click `Start.bat`. If a warning names an unknown publisher, click Run.
 
    `Start.bat` opens a black text window and `Start.command` opens a Terminal window. Each one is the app itself, so closing it quits the app.
@@ -395,7 +395,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 4. 启动程序。
 
-   - macOS：双击 `TikTok Live Translator.app`，别把它拖出所在的文件夹。如果提示打不开，到「系统设置 → 隐私与安全性」点「仍要打开」；macOS 14 及更早的系统，改成右键点程序，选「打开」。`Start.command` 是另一种启动方式，会在「终端」窗口里启动。
+   - macOS：双击 `TikTok Live Translator.app`，别把它拖出所在的文件夹。如果提示打不开，到「系统设置 → 隐私与安全性」点「仍要打开」；macOS 14 及更早的系统，改成右键点程序，选「打开」。`Start.command` 是另一种启动方式，会在「终端」窗口里启动。双击后提示「macOS 没让本程序读它所在的文件夹」时，照对话框里的几步做，或者改用 `Start.command`；0.19.0 和更早的版本这时会提示要装 Python，其实 Python 已经装了。见[常见问题](docs/faq.zh-CN.md#zh-folder-permission)。
    - Windows：双击 `Start.bat`。如果弹出「发布者未知」的警告，点「运行」。
 
    `Start.bat` 会多开一个黑色的文字窗口，`Start.command` 会多开一个「终端」窗口。它们就是程序本身，关掉它们程序就退出。
