@@ -253,6 +253,101 @@ NO_PYTHON = (
     "python.org/downloads page is now open. Download and install the macOS installer, then "
     "double-click the app again.")
 PYTHON_PAGE = "https://www.python.org/downloads/"
+# tools/find_python.sh 打得开，载入以后却没有 find_python（文件被截断、内容不对）。以前这时 find_python
+# 报 command not found，照样走进上面 NO_PYTHON 那一支
+BROKEN_FINDER = (
+    "tools/find_python.sh 读得到，但里面没有探测 Python 的那一段。项目文件不完整，无法探测 Python。\\n\\n"
+    "请重新下载完整项目。",
+    "tools/find_python.sh can be read, but the part that checks for Python isn’t in it. The project folder "
+    "is incomplete, so the app can’t check for Python.\\n\\nDownload a fresh copy of the complete project.")
+
+# ---- 2026-10-29（tccfix）：文件在、读不了 --------------------------------------------------------
+# 新 Mac（macOS 26，程序在开着 iCloud 同步的桌面上）从访达、聚焦搜索双击 .app：[ -f ] 都过了（stat 能做），
+# `. tools/find_python.sh` 却报 Operation not permitted，find_python 没定义，启动器弹 NO_PYTHON、还打开了
+# python.org——Python 早就装好了；从终端用 Start.command 启动一切正常。现在先真的打开一次：读不了就照实说
+# 读不了（系统返回的原话照抄），给系统设置和 Start.command 两条路，不提 Python。
+# 这几段带路径，作为参数交给 AppleScript（on run argv），不拼进脚本：路径里有引号、反斜杠都原样显示。
+# 段落之间是真的换行
+FILES_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders"
+FDA_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+ASK_BUTTONS = ("关闭 · Close", "先用终端打开 · Open in Terminal", "打开系统设置 · Open System Settings")
+ASK_SCRIPT = (
+    "on run argv",
+    'set b to button returned of (display dialog (item 1 of argv) default answer (item 2 of argv) with title "{}" '
+    'buttons {{"{}", "{}", "{}"}} default button 3 cancel button 1 with icon caution)'.format(DIALOG_TITLE, *ASK_BUTTONS),
+    'if b is "{}" then return "settings"'.format(ASK_BUTTONS[2]),
+    'if b is "{}" then return "terminal"'.format(ASK_BUTTONS[1]),
+    "end run",
+)
+SAY_SCRIPT = (
+    "on run argv",
+    'display dialog (item 1 of argv) with title "{}" buttons {{"OK"}} default button 1 with icon caution'.format(
+        DIALOG_TITLE),
+    "end run",
+)
+FOLDER_DENIED = (
+    "macOS 没让本程序读它所在的文件夹（{dir}），读文件时系统返回「{why}」。\n\n"
+    "照下面做一次：\n"
+    "1. 点「打开系统设置」，在「隐私与安全性」→「文件与文件夹」里找到本程序（TikTok Live Translator 或 "
+    "TikTok 直播同传），打开它下面{folder}的开关。\n"
+    "2. 列表里没有它时，到「隐私与安全性」→「完全磁盘访问权限」，点「+」，在选文件的窗口里按 ⌘⇧G，"
+    "粘贴下面输入框里的路径后回车、点「打开」，再把它的开关打开。\n"
+    "3. 重新双击本程序。\n\n"
+    "也可以点「先用终端打开」：用「终端」运行同一文件夹里的 Start.command，以后也可以自己双击它。"
+    "本程序不会自己改系统设置。",
+    "macOS didn’t let the app read the folder it’s in ({dir}). Reading a file there returned “{why}”.\n\n"
+    "Do this once:\n"
+    "1. Click Open System Settings. In Privacy & Security > Files & Folders, find TikTok Live Translator "
+    "and turn on {folder}.\n"
+    "2. If it isn’t in that list, go to Privacy & Security > Full Disk Access, click +, press ⌘⇧G in the "
+    "file window, paste the path from the box below, press Return, click Open, and turn on its switch.\n"
+    "3. Double-click the app again.\n\n"
+    "Or click Open in Terminal to run Start.command from the same folder in Terminal. You can also "
+    "double-click Start.command yourself later. The app never changes system settings itself.")
+# 「文件与文件夹」里每个 app 下面的开关名，照抄系统设置（macOS 26 的 SecurityPrivacyExtension 里
+# DESKTOP_FOLDER 等几条的 en / zh_CN）；不在这三个文件夹里时不点名
+FOLDER_SWITCHES = {
+    "Desktop": ("「“桌面”文件夹」", "its Desktop Folder switch"),
+    "Documents": ("「“文稿”文件夹」", "its Documents Folder switch"),
+    "Downloads": ("「“下载”文件夹」", "its Downloads Folder switch"),
+    None: ("本程序所在位置对应的那一项", "the switch under it for the place the app is in"),
+}
+# 打不开、系统返回的又不是 Operation not permitted / Permission denied：只说读不了和原话，不给系统设置那几步
+# （chmod 和 sandbox-exec 都只做得出这两种，这一句只查文字本身）
+FILE_UNREADABLE = (
+    "读不了本程序文件夹里的文件（{file}），系统返回「{why}」。\n\n"
+    "可以先双击同一文件夹里的 Start.command，在「终端」里打开本程序。还是不行的话，重新下载完整项目。",
+    "Couldn’t read a file in the app’s folder ({file}). The system returned “{why}”.\n\n"
+    "You can double-click Start.command in the same folder to open the app in Terminal instead. If that "
+    "doesn’t work either, download a fresh copy of the complete project.")
+SETTINGS_FAILED = (
+    "没能打开「系统设置」（open 返回 {rc}）。可以自己打开「系统设置」→「隐私与安全性」→「文件与文件夹」。",
+    "Couldn’t open System Settings (open returned {rc}). You can open System Settings > Privacy & Security > "
+    "Files & Folders yourself.")
+TERMINAL_FAILED = (
+    "没能用「终端」打开 Start.command（open 返回 {rc}）。可以在访达里打开本程序所在的文件夹，双击 Start.command。",
+    "Couldn’t open Start.command in Terminal (open returned {rc}). You can open the app’s folder in Finder and "
+    "double-click Start.command.")
+ARGV_DIALOGS = {"folder_denied": FOLDER_DENIED, "file_unreadable": FILE_UNREADABLE,
+                "settings_failed": SETTINGS_FAILED, "terminal_failed": TERMINAL_FAILED}
+
+
+def _e(lines):
+    return [x for line in lines for x in ("-e", line)]
+
+
+def _ask(root, why, folder=None):
+    """权限对话框那一次 osascript：脚本、正文、输入框里预填的 app 路径。"""
+    zh_folder, en_folder = FOLDER_SWITCHES[folder]
+    zh, en = FOLDER_DENIED
+    text = (zh.format(dir=root, why=why, folder=zh_folder) + "\n\n"
+            + en.format(dir=root, why=why, folder=en_folder))
+    return ["osascript"] + _e(ASK_SCRIPT) + [text, str(root / "app")]
+
+
+def _say(texts, **fields):
+    zh, en = texts
+    return ["osascript"] + _e(SAY_SCRIPT) + [zh.format(**fields) + "\n\n" + en.format(**fields)]
 
 
 def _dialog(texts, icon, answer=None):
@@ -262,7 +357,8 @@ def _dialog(texts, icon, answer=None):
             "default button 1 with icon {}".format(zh, en, field, DIALOG_TITLE, icon)]
 
 
-@pytest.mark.parametrize("texts", [NO_MAIN, NO_FINDER, NO_PYTHON, TRANSLOCATED, (UNQUARANTINE, UNQUARANTINE)])
+@pytest.mark.parametrize("texts", [NO_MAIN, NO_FINDER, NO_PYTHON, TRANSLOCATED, (UNQUARANTINE, UNQUARANTINE),
+                                   BROKEN_FINDER])
 def test_each_dialog_is_chinese_then_english(texts):
     """这些对话框在 Python 之前弹出，读不到界面语言设置：两段并列，不按系统语言挑。
     文字直接拼进 AppleScript 的字符串，所以不许有 ASCII 双引号，反斜杠只许是 \\n。"""
@@ -275,21 +371,28 @@ def test_each_dialog_is_chinese_then_english(texts):
         assert '"' not in text and "\\" not in text.replace("\\n", ""), text
 
 
-def _run_launcher(tmp_path, script):
+def _run_launcher(tmp_path, script, *, answer="", open_rc=0, wrap=()):
     """用 bash 真跑一遍启动脚本；PATH 里只有假的 osascript / open 和真的 dirname。
-    返回 (进程结果, 按顺序的 [命令名, 参数…] 列表)。"""
+    返回 (进程结果, 按顺序的 [命令名, 参数…] 列表)。
+
+    answer 是假 osascript 往 stdout 打的那一行（带按钮的对话框里「点了哪个」，空串就是关掉了），
+    open_rc 是假 open 的退出码，wrap 套在 bash 前面（sandbox-exec 那一条用）。"""
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
     log = tmp_path / "calls.log"
+    tails = {"osascript": '[ -z "$TLT_FAKE_ANSWER" ] || printf \'%s\\n\' "$TLT_FAKE_ANSWER"\n',
+             "open": 'exit "${TLT_FAKE_OPEN_RC:-0}"\n'}
     for name in ("osascript", "open"):
         fake = fake_bin / name
         # 参数之间用 \037、每次调用之后用 \036 分隔：AppleScript 里可能有空格和换行
-        fake.write_text('#!/bin/bash\n{ printf \'%s\\037\' "${0##*/}" "$@"; printf \'\\036\'; } >> "$TLT_FAKE_LOG"\n',
-                        encoding="utf-8")
+        fake.write_text('#!/bin/bash\n{ printf \'%s\\037\' "${0##*/}" "$@"; printf \'\\036\'; } >> "$TLT_FAKE_LOG"\n'
+                        + tails[name], encoding="utf-8")
         fake.chmod(0o755)
     (fake_bin / "dirname").symlink_to(shutil.which("dirname"))
-    env = {"PATH": str(fake_bin), "HOME": str(tmp_path), "TLT_FAKE_LOG": str(log)}
-    proc = subprocess.run([BASH, str(script)], env=env, cwd=str(tmp_path), capture_output=True, timeout=60)
+    env = {"PATH": str(fake_bin), "HOME": str(tmp_path), "TLT_FAKE_LOG": str(log),
+           "TLT_FAKE_ANSWER": answer, "TLT_FAKE_OPEN_RC": str(open_rc)}
+    proc = subprocess.run(list(wrap) + [BASH, str(script)], env=env, cwd=str(tmp_path), capture_output=True,
+                          timeout=60)
     records = log.read_text(encoding="utf-8").split("\036") if log.exists() else []
     return proc, [r.split("\037")[:-1] for r in records if r]
 
@@ -366,6 +469,146 @@ def test_start_command_dialog_is_bilingual_but_the_terminal_stays_chinese(tmp_pa
     assert "is needed to run" not in out
 
 
+# ---- tccfix：文件在、读不了时说读不了，不送人去 python.org ---------------------------------------
+# chmod 000 做出「在、读不了」（系统返回 Permission denied）；root 不受文件权限管，Windows 不跑 bash
+needs_unreadable = pytest.mark.skipif(
+    sys.platform == "win32" or not os.path.exists(BASH) or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="要用 chmod 000 做出读不了的文件：Windows 不跑 bash，root 不受文件权限管")
+APP_LAUNCHER = ("app", "Contents", "MacOS", LAUNCHER.name)
+
+
+def _unreadable(path):
+    path.chmod(0)
+    return path
+
+
+@needs_unreadable
+@pytest.mark.parametrize("name", ["main.py", "tools/find_python.sh"])
+def test_a_file_that_is_there_but_unreadable_gets_the_folder_dialog_not_python_org(tmp_path, name):
+    """2026-10-29：`. tools/find_python.sh` 读不了，find_python 没定义，以前弹「需要先安装 Python」、打开
+    python.org。现在 main.py 和 find_python.sh 都先真的打开一次，读不了就弹文件夹权限那一个对话框。"""
+    root = _project(tmp_path, main_py=True, finder=True)
+    _unreadable(root / name)
+    proc, calls = _run_launcher(tmp_path, root.joinpath(*APP_LAUNCHER))
+    assert proc.returncode == 1, proc.stderr.decode("utf-8", "replace")
+    assert calls == [_ask(root, "Permission denied")]
+
+
+@needs_unreadable
+@pytest.mark.parametrize("folder", ["Desktop", "Documents", "Downloads"])
+def test_the_dialog_names_the_switch_for_the_protected_folder(tmp_path, folder):
+    """「文件与文件夹」里每个 app 下面是「“桌面”文件夹」这样的开关：程序在哪个文件夹里就点哪一个的名。"""
+    home_folder = tmp_path / folder
+    home_folder.mkdir()
+    root = _project(home_folder, main_py=True, finder=True)
+    _unreadable(root / "main.py")
+    proc, calls = _run_launcher(tmp_path, root.joinpath(*APP_LAUNCHER))
+    assert proc.returncode == 1
+    assert calls == [_ask(root, "Permission denied", folder)]
+
+
+@on_macos
+@needs_bash
+def test_a_denial_like_the_one_on_the_new_mac(tmp_path):
+    """和 10-29 那台机器上一样的拒绝：stat 能做，打开读报 Operation not permitted（系统的隐私保护走的是
+    同一个 Sandbox 机制，sandbox-exec 拒掉 file-read-data 得到的就是它）。程序在桌面上。"""
+    sandbox = shutil.which("sandbox-exec")
+    if not sandbox or subprocess.run([sandbox, "-p", "(version 1)(allow default)", "/usr/bin/true"],
+                                     capture_output=True, timeout=30).returncode != 0:
+        pytest.skip("这里用不了 sandbox-exec")
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    root = _project(desktop, main_py=True, finder=True)
+    real = root.resolve()
+    profile = '(version 1)(allow default)(deny file-read-data (literal "{}") (literal "{}"))'.format(
+        real / "main.py", real / "tools" / "find_python.sh")
+    proc, calls = _run_launcher(tmp_path, root.joinpath(*APP_LAUNCHER), wrap=[sandbox, "-p", profile])
+    assert proc.returncode == 1, proc.stderr.decode("utf-8", "replace")
+    assert calls == [_ask(root, "Operation not permitted", "Desktop")]
+
+
+@needs_unreadable
+@pytest.mark.parametrize("answer, open_rc, rc, tail", [
+    ("settings", 0, 1, lambda root: [["open", FILES_SETTINGS]]),
+    # 「文件与文件夹」那一页打不开就退到「完全磁盘访问权限」那一页；也不成就照实说 open 返回了什么
+    ("settings", 1, 1, lambda root: [["open", FILES_SETTINGS], ["open", FDA_SETTINGS],
+                                     _say(SETTINGS_FAILED, rc=1)]),
+    ("terminal", 0, 0, lambda root: [["open", "-a", "Terminal", str(root / START_COMMAND.name)]]),
+    ("terminal", 1, 1, lambda root: [["open", "-a", "Terminal", str(root / START_COMMAND.name)],
+                                     _say(TERMINAL_FAILED, rc=1)]),
+    ("", 0, 1, lambda root: []),            # 点了「关闭」或按了 Esc：什么都不开
+], ids=["settings", "settings-open-failed", "terminal", "terminal-open-failed", "close"])
+def test_the_folder_dialog_buttons_only_open_things(tmp_path, answer, open_rc, rc, tail):
+    """按钮只打开系统设置那一页、或者用「终端」打开同一文件夹里的 Start.command，程序绝不自己改设置。"""
+    root = _project(tmp_path, main_py=True, finder=True)
+    _unreadable(root / "tools" / "find_python.sh")
+    proc, calls = _run_launcher(tmp_path, root.joinpath(*APP_LAUNCHER), answer=answer, open_rc=open_rc)
+    assert proc.returncode == rc, proc.stderr.decode("utf-8", "replace")
+    assert calls == [_ask(root, "Permission denied")] + tail(root)
+
+
+@needs_bash
+def test_a_find_python_file_without_the_function_is_not_reported_as_missing_python(tmp_path):
+    root = _project(tmp_path, main_py=True, finder=True)
+    (root / "tools" / "find_python.sh").write_text("# 被截断了\n", encoding="utf-8")
+    proc, calls = _run_launcher(tmp_path, root.joinpath(*APP_LAUNCHER))
+    assert proc.returncode == 1, proc.stderr.decode("utf-8", "replace")
+    assert calls == [_dialog(BROKEN_FINDER, "caution")]
+
+
+@needs_unreadable
+def test_start_command_says_it_could_not_read_the_finder_instead_of_sending_you_to_python_org(tmp_path):
+    """Start.command 同一个问题：find_python.sh 读不了时以前也打印「未检测到 Python」、打开 python.org。
+    终端里的话照旧只写中文（用户决定 4）。"""
+    root = _project(tmp_path, main_py=True, finder=True)
+    _unreadable(root / "tools" / "find_python.sh")
+    proc, calls = _run_launcher(tmp_path, root / START_COMMAND.name)
+    assert proc.returncode == 1, proc.stderr.decode("utf-8", "replace")
+    assert calls == []
+    out = proc.stdout.decode("utf-8")
+    assert "[读不了程序文件] tools/find_python.sh 打不开，系统返回「Permission denied」，这一步没有去找 Python。" in out
+    assert "未检测到 Python" not in out and "python.org" not in out
+
+
+@needs_bash
+def test_start_command_with_a_broken_finder_is_not_reported_as_missing_python(tmp_path):
+    root = _project(tmp_path, main_py=True, finder=True)
+    (root / "tools" / "find_python.sh").write_text("# 被截断了\n", encoding="utf-8")
+    proc, calls = _run_launcher(tmp_path, root / START_COMMAND.name)
+    assert proc.returncode == 1 and calls == []
+    out = proc.stdout.decode("utf-8")
+    assert "[文件不完整] tools/find_python.sh 里没有探测 Python 的那一段。" in out
+    assert "未检测到 Python" not in out
+
+
+@pytest.mark.parametrize("key", sorted(ARGV_DIALOGS))
+def test_the_argv_dialogs_are_chinese_then_english(key):
+    """作为参数交给 AppleScript 的这几段同样中文在前、英文在后，各段都不缺。填进去的路径、原话是数据：
+    这里拿 ASCII 的样例填，只查我们自己写的字。"""
+    zh, en = ARGV_DIALOGS[key]
+    fields = {"dir": "/Users/x/Desktop/app", "file": "/Users/x/Desktop/app/main.py",
+              "why": "Operation not permitted", "rc": 1}
+    for folder in FOLDER_SWITCHES.values():
+        zh_text = zh.format(folder=folder[0], **fields)
+        en_text = en.format(folder=folder[1], **fields)
+        for part in zh_text.split("\n\n"):
+            assert i18n.CJK.search(part), part
+        assert not i18n.CJK.search(en_text), en_text
+        assert zh_text.count("\n\n") == en_text.count("\n\n")
+        for text in (zh_text, en_text):          # 这几种情况下 Python 好好的：不许再提装 Python
+            assert "python.org" not in text and "Python 3.10" not in text
+
+
+@on_macos
+@pytest.mark.parametrize("lines", [ASK_SCRIPT, SAY_SCRIPT], ids=["ask", "say"])
+def test_the_argv_dialog_scripts_compile_as_applescript(tmp_path, lines):
+    if not shutil.which("osacompile"):
+        pytest.skip("没有 osacompile")
+    proc = subprocess.run(["osacompile"] + _e(lines) + ["-o", str(tmp_path / "dialog.scpt")],
+                          capture_output=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+
+
 def test_the_launchers_keep_lf_line_endings_in_every_checkout():
     """启动器是 bash 脚本：core.autocrlf=true 的检出（全局配置写错的 macOS / Linux 克隆）里变成
     CRLF，bash 报「: command not found」「unexpected end of file」，双击 .app 直接失败。
@@ -391,8 +634,9 @@ def test_the_launchers_parse(script):
 @on_macos
 @pytest.mark.parametrize("texts, icon, answer", [(NO_MAIN, "caution", None), (NO_FINDER, "caution", None),
                                                  (NO_PYTHON, "note", None),
-                                                 (TRANSLOCATED, "caution", UNQUARANTINE)],
-                         ids=["no-main-py", "no-find-python", "no-python", "translocated"])
+                                                 (TRANSLOCATED, "caution", UNQUARANTINE),
+                                                 (BROKEN_FINDER, "caution", None)],
+                         ids=["no-main-py", "no-find-python", "no-python", "translocated", "broken-find-python"])
 def test_the_dialog_scripts_compile_as_applescript(tmp_path, texts, icon, answer):
     """osacompile 只编译不运行：不弹框。弯引号、· 和中文都在 AppleScript 字符串里。"""
     if not shutil.which("osacompile"):
