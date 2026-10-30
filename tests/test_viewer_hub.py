@@ -475,6 +475,8 @@ def test_inbound_messages_never_reach_on_control():
         text({"type": "open_guard_dir"}),
         # 弹幕重译（2026-10-14）：只有本机页面能点，手机发这个一律进不来
         text({"type": "retranslate_comment", "id": "7234567890123456789"}),
+        # 自检「语音识别」一行的「现在下载」（2026-10-29）：提前下载识别模型只有中控本机能点
+        text({"type": "download_asr_model"}),
         # 字幕记录（含观众弹幕和昵称）：导出和打开文件夹只有中控本机能点
         text({"type": "export_transcript"}),
         text({"type": "open_transcripts_dir"}),

@@ -93,7 +93,12 @@ not come out of decryption; start again and, if a Keychain dialog asks for
 
 <a id="code-4003110"></a>**"TikTok didn't provide a stream URL for this live stream (code 4003110)."**
 That code is TikTok's generic refusal; the response carries no reason, and the
-app does not invent one. Before concluding anything, run the built-in check:
+app does not invent one. The app retries up to three times, each lookup taking
+about 40 seconds, and the page says which attempt is running. Meanwhile, open
+the live stream in your browser to check whether the streamer is live. If the
+message also says the lookup couldn't read the TikTok sign-in from Safari, the
+Full Disk Access steps are in the notice at the top. Before concluding anything,
+run the built-in check:
 
 ```bash
 python3 tools/diagnose_room.py @streamer --history-only   # your own logs only, no requests
@@ -112,7 +117,10 @@ two weeks.
 
 **The first start appears stuck downloading the recognition model.** The model
 is being retrieved from Hugging Face (large-v3 is approximately 3 GB). Progress
-is displayed on the page and this occurs only once.
+is displayed on the page and this occurs only once. To avoid the wait during a
+live stream, download it beforehand: Settings → Startup Check, then Download Now
+on the Speech Recognition row. The button appears only while the model is
+missing and is unavailable while connecting or live.
 
 **All translations fail and captions show only the source language.** Google's
 free endpoint, which `auto` uses when no local model is installed,

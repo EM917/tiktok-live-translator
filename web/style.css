@@ -1387,6 +1387,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .sc-item .sc-detail { flex: 1; color: var(--label); }
 .sc-item .sc-fix { display: block; color: var(--label); margin-top: 2px; white-space: pre-line; }   /* 「完全磁盘访问权限」那几步分行写，路径单独一行（I8） */
+.sc-item .sc-action { display: flex; width: max-content; max-width: 100%; margin-top: 6px; }   /* 「语音识别」一行的「现在下载」：单独一行，跟在说明后面 */
 .sc-item.fail .sc-detail { color: var(--fail); font-weight: 600; }
 .sc-item .sc-fix .sc-recheck { display: block; margin-top: 6px; white-space: normal; }   /* 「我加好了，再查一次」，在那几步下面 */
 

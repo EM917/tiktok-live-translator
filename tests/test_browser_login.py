@@ -371,9 +371,12 @@ def _advice(message):
      ["完全磁盘访问权限"]),
     ({"chrome": "blocked_by_system", "safari": "not_logged_in"},
      [bl.fda_steps(), bl.LOGIN_STEPS], []),
+    # 2026-10-29 那一场：借到了 Chrome 的登录，可登录优先那一步要读的 Safari 被系统拒绝读取。以前这里只说借了
+    # Chrome、钉着「不带完全磁盘访问权限」；现在留着 Safari 的观察和那几步（browser_login.fda_needed）
     ({"chrome": "ok", "safari": "blocked_by_system"},
-     ["已借用 Chrome 里的 TikTok 登录再试，TikTok 仍然没有给出流地址。"],
-     ["完全磁盘访问权限", bl.LOGIN_STEPS]),
+     ["已借用 Chrome 里的 TikTok 登录再试，TikTok 仍然没有给出流地址。", "Safari：系统拒绝读取",
+      bl.FDA_OBSERVED + bl.fda_steps()],
+     [bl.LOGIN_STEPS]),
     ({"chrome": "keychain_wait"}, ["Chrome：读取在限时内没有返回", bl.KEYCHAIN_STEPS], []),
     ({"chrome": "error:RuntimeError"}, ["Chrome：读取出错（RuntimeError）"], []),
 ])
@@ -429,7 +432,10 @@ def _assert_plain_english(text, where):
      # 权限范围那句之后另起一行（审查第 1 轮）：接在它后面读起来像是在接着讲权限
      ["Full Disk Access", "in the same list.\nSign in to TikTok in Chrome (or Safari), then try again.\n"]),
     ({"chrome": "ok", "safari": "blocked_by_system"},
-     ["Tried again with the TikTok sign-in from Chrome. TikTok still didn’t provide a stream URL."]),
+     ["\nTried again with the TikTok sign-in from Chrome. TikTok still didn’t provide a stream URL. "
+      "Looked for a TikTok sign-in in your browsers. Safari: macOS didn’t allow access.\n"
+      "macOS didn’t allow the app to read browser data. ",
+      "(do this for each path):\n“/opt/homebrew/bin/python3.14”\n“/opt/anaconda3/bin/python3.13”\n"]),
     ({"chrome": "keychain_wait"},
      ["Chrome: reading didn’t finish in time", "If a keychain dialog is on screen, click Always Allow"]),
     ({"chrome": "cannot_decrypt", "edge": "cannot_decrypt"},
@@ -1055,6 +1061,7 @@ def test_fda_steps_say_to_remove_and_add_again_and_what_the_permission_covers():
     {"chrome": "blocked_by_system", "safari": "blocked_by_system"},
     {"safari": "blocked_by_system", "chrome": "not_logged_in"},      # 专家量的那种：中文 5 行、英文 7 行
     {"chrome": "blocked_by_system", "safari": "keychain_wait"},
+    {"safari": "blocked_by_system", "chrome": "ok"},                 # 2026-10-29：借到了 Chrome，Safari 被拒
 ])
 @pytest.mark.parametrize("lang", ["zh", "en"])
 def test_blocked_message_keeps_the_4003110_sentence_alone_on_the_first_line(monkeypatch, login, lang):
@@ -1074,7 +1081,7 @@ def test_blocked_message_keeps_the_4003110_sentence_alone_on_the_first_line(monk
 
 @pytest.mark.parametrize("login", [
     None, {"chrome": "not_read"}, {"chrome": "not_logged_in"}, {"chrome": "no_tiktok_cookie"},
-    {"chrome": "ok", "safari": "blocked_by_system"}, {"chrome": "keychain_wait"}, {"chrome": "readable"},
+    {"chrome": "ok"}, {"chrome": "keychain_wait"}, {"chrome": "readable"},
     {"chrome": "cannot_decrypt"}, {"chrome": "error:RuntimeError"},
 ])
 def test_messages_without_the_full_disk_access_steps_stay_one_line(login):

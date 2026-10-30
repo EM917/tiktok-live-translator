@@ -20,7 +20,7 @@ from inspect import isawaitable
 from pathlib import Path
 
 from . import asr_risk, i18n
-from .asr import DEFAULT_TEMPERATURE
+from .asr import DEFAULT_TEMPERATURE, MODEL_SIZES_MB
 from .i18n import LN, L, of
 from .comment_levels import snapshot as level_snapshot
 from .comment_source import CommentSource
@@ -107,10 +107,6 @@ def _open_directory_default(path):
     else:
         subprocess.Popen(["xdg-open", str(path)])
 
-# whisper 各模型的大致下载体积（MB），用来在 UI 上显示首次下载进度
-MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
-                  "large-v3": 3100, "large-v3-turbo": 1620}
-
 DENOISE_MODEL = Path(__file__).resolve().parent.parent / "models" / "bd.rnnn"
 DENOISE_MIN_BYTES = 100_000   # 完整模型约 300 KB；明显小于此值 = 下载被截断
 
@@ -194,14 +190,15 @@ def _accepts_urgent(stop):
         return False
 
 
-def browser_only_message(retries, login=None):
-    """解析以 kind=browser_only 收场时给中控的话。
+def browser_only_message(retries, login=None, first=None):
+    """解析以 kind=browser_only 收场时给中控的话。first 是登录优先那一步要读的浏览器
+    （resolver._login_first_browsers；见 browser_login.fda_needed），不知道是 None。
 
     前半句是一直以来的事实（TikTok 不给、原因它不说明）；中间按这次借浏览器登录时的
     观察（ResolveError.login，{浏览器: 代码}）接上对应的一步——系统拒绝读取就给
     「完全磁盘访问权限」的步骤，没登录就说去登录，借到了登录仍然不给就照实说；
     最后是粘 .flv 地址的办法。只写观察和能照做的事。"""
-    from .browser_login import browser_only_advice
+    from .browser_login import lookup_advice
 
     # 中英文都只写这次真看到的：接口不给、重试了几次、TikTok 不说原因。不写「不是 X 问题」这种
     # 否定句，否定句里也不许出现原因标签；也不写「同一时刻其它直播间正常」——那是 09-05 一次
@@ -220,26 +217,30 @@ def browser_only_message(retries, login=None):
                "Retried {} times. TikTok doesn’t say why. Sometimes it works if you click "
                "Start again a little later. Sometimes it doesn’t work for the whole stream."
                ).format(retries)
-            + browser_only_advice(login)
+            + lookup_advice(login, first)
             + L("想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来"
                 "（中间空格隔开），一次约两周有效。",
                 " To watch now, paste the live link and the .flv URL from your browser "
                 "together, separated by a space. A .flv URL usually works for about two "
-                "weeks."))
+                "weeks.")
+            # 2026-10-29：三次一共 156 秒，收场的话里没有一件中控现在就能自己核对的事。放在最后：第一行（4003110
+            # 那句）不能变长，横幅折叠时只露它
+            + L("也可以在浏览器里打开这个直播间，看看主播是不是在播。",
+                " You can also open this live stream in your browser to check whether the streamer is live."))
 
 
 def _fda_paths(exc):
     """解析失败的话里带着「完全磁盘访问权限」那一步时，那一步要加的路径（browser_login.fda_targets，和文字里
-    列的是同一份）；不带就是空列表。带不带照 browser_login.browser_only_advice 的判断：kind=browser_only、借登录
-    时有浏览器被系统拒绝读取（BLOCKED）、又没有哪个浏览器借到了登录（借到了，那段话说的是「借了也不给」）。
-    别的 kind 的话里没有这一步，带了路径页面上就是几行没头没尾的复制框。"""
-    from .browser_login import BLOCKED, NOT_READ, OK, fda_targets
+    列的是同一份）；不带就是空列表。带不带和那段话用同一个判断（browser_login.fda_needed）：kind=browser_only、
+    借登录时有浏览器被系统拒绝读取（BLOCKED），而且没借到任何登录、或者被拒的正是登录优先那一步要读的浏览器
+    （exc.login_first，_resolve_media 收场时记上；2026-10-29 Safari 被拒、Chrome 借到了，以前这里一看到借到了
+    就不给）。别的 kind 的话里没有这一步，带了路径页面上就是几行没头没尾的复制框。"""
+    from .browser_login import fda_needed, fda_targets
 
     login = getattr(exc, "login", None)
     if getattr(exc, "kind", None) != "browser_only" or not isinstance(login, dict):
         return []
-    codes = [c for c in login.values() if c != NOT_READ]
-    if BLOCKED not in codes or OK in codes:
+    if not fda_needed(login, getattr(exc, "login_first", None)):
         return []
     try:
         return list(fda_targets())
@@ -422,6 +423,7 @@ from .viewer_share import (  # noqa: E402
     VIEWER_STOP_TIMEOUT_SEC,        # noqa: F401
     VIEWER_RETRANSLATE_QUEUE_MAX,   # noqa: F401
 )
+from .pipeline_asr_fetch import AsrPrefetchMixin  # noqa: E402
 from .pipeline_disk import DiskSpaceMixin  # noqa: E402
 from .pipeline_engine import EngineProvisionMixin  # noqa: E402
 from .pipeline_evidence import AsrEvidenceMixin  # noqa: E402
@@ -433,7 +435,8 @@ from .pipeline_transcript import TranscriptMixin  # noqa: E402
 
 
 class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGuardMixin,
-               TranscriptMixin, FloatWindowMixin, FlashSaleMixin, AsrEvidenceMixin, StreamWatchMixin):
+               TranscriptMixin, FloatWindowMixin, FlashSaleMixin, AsrEvidenceMixin, StreamWatchMixin,
+               AsrPrefetchMixin):
     def __init__(self, args, server):
         self.args = args
         self.server = server
@@ -728,6 +731,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return self._flash_control(msg)
         elif mtype == "open_guard_dir":
             return self._open_guard_dir()      # 弹幕留意的规则文件夹，见 pipeline_guard.py
+        elif mtype == "download_asr_model":
+            # 自检「语音识别」一行的「现在下载」：待机时提前下载识别模型（app/pipeline_asr_fetch.py）。放后台跑、
+            # 立刻返回；连接中、直播中、更新中不下。只有本机页面发得出来：手机入站只认 retranslate，浮窗页的
+            # 入站一律丢弃
+            return self._request_asr_prefetch()
         elif mtype == "export_transcript":
             return self._export_transcript()   # 设置里「字幕记录」：导出最近一场，见 pipeline_transcript.py
         elif mtype == "open_transcripts_dir":
@@ -2055,9 +2063,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         await self._publish_selfcheck(checks)
 
     def _asr_check_state(self):
-        """交给自检「语音识别」那一行的实际加载结果（加载失败、出错后改用了 CPU）。"""
+        """交给自检「语音识别」那一行的实际加载结果（加载失败、出错后改用了 CPU），以及待机时的提前下载
+        是不是还没完（fetching：那一行的「现在下载」置灰，见 app/pipeline_asr_fetch.py）。"""
         return {"load_error": getattr(self, "_asr_load_error", None),
-                "fallback": getattr(self, "_asr_fallback", None)}
+                "fallback": getattr(self, "_asr_fallback", None),
+                "fetching": self._asr_fetching()}
 
     async def _publish_selfcheck(self, checks):
         from .selfcheck import summarize
@@ -2445,6 +2455,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                       "下一次重连再查".format(tried))
                 break
             tried = attempt
+            if attempt > 1:
+                # 每次重试开始前说一句：一次解析本身就要约 40 秒（2026-10-29 实测 38.6–38.9 秒，WebKit 那层占 25 秒），
+                # 以前只有等待前那句「N 秒后自动重试」，接下来这次解析期间它一直挂着，屏幕上停了约 59 秒
+                await self.server.status(
+                    "connecting", L("正在第 {}/{} 次查流地址（每次约 {} 秒）…",
+                                    "Looking up the stream URL, attempt {} of {} (about {} sec each)…")
+                    .format(attempt, self.BROWSER_ONLY_RETRIES, self.BROWSER_ONLY_LOOKUP_NOTE_SEC))
             layers, t0 = [], time.monotonic()
             try:
                 with self._stage_during(sess, "lookup", self._lookup_stage_budget() if sess else None,
@@ -2469,6 +2486,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 await self._sync_login_incident(layers)
                 return media
             if attempt < self.BROWSER_ONLY_RETRIES and self._lookup_token_left(policy):
+                # 等待那句的事实不变，后面补一件中控现在就能做的事；登录优先那一层这次被系统拒绝读取时，再补一句
+                # 纯观察（读不到哪个浏览器、步骤在顶部那条提示里）。不说是原因
                 await self.server.status(
                     "connecting",
                     L("TikTok 暂时没有把这个直播间的流地址给程序，{:.0f} 秒后自动重试"
@@ -2476,14 +2495,49 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                       "TikTok didn’t provide a stream URL for this live stream. Retrying in "
                       "{:.0f} sec (attempt {} of {})…").format(self.BROWSER_ONLY_RETRY_SEC,
                                                               attempt + 1,
-                                                              self.BROWSER_ONLY_RETRIES))
+                                                              self.BROWSER_ONLY_RETRIES)
+                    # 英文开头带一个空格：接在前一句的「…」后面（中文句子直接相连）
+                    + L("可以先在浏览器里打开这个直播间，看看主播是不是在播。",
+                        " Meanwhile, you can open this live stream in your browser to check whether the "
+                        "streamer is live.")
+                    + self._first_layer_refused_note(layers))
                 with self._stage_during(sess, "lookup_wait",
                                         self.BROWSER_ONLY_RETRY_SEC + self.STAGE_BACKOFF_SLACK_SEC):
                     await asyncio.sleep(self.BROWSER_ONLY_RETRY_SEC)
-        raise ResolveError(browser_only_message(tried or self.BROWSER_ONLY_RETRIES,
-                                                getattr(last, "login", None)),
+        first = self._login_first()
+        err = ResolveError(browser_only_message(tried or self.BROWSER_ONLY_RETRIES,
+                                                getattr(last, "login", None), first),
                            kind="browser_only",
-                           login=getattr(last, "login", None)) from last
+                           login=getattr(last, "login", None))
+        err.login_first = first        # _fda_paths 照同一个判断决定带不带路径
+        raise err from last
+
+    # 重试前那句「每次约 N 秒」：2026-10-29 实测一次解析 38.6–38.9 秒（WebKit 那层 25 秒超时占了大半）
+    BROWSER_ONLY_LOOKUP_NOTE_SEC = 40
+
+    def _login_first(self):
+        """登录优先那一步读哪些浏览器（resolver._login_first_browsers）；查不出来是 None。"""
+        from . import resolver
+        try:
+            return tuple(resolver._login_first_browsers(getattr(self.args, "cookies_browser", "auto")))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _first_layer_refused_note(layers):
+        """这次解析里登录优先那一层（resolver.LOGIN_LAYER）记着某个浏览器被系统拒绝读取时，补在等待那句后面的
+        一句观察；没有就是空串。只说读不到哪个浏览器、步骤在哪儿，不说这就是拿不到流地址的原因。"""
+        from .browser_login import BLOCKED, label
+        from .resolver import LOGIN_LAYER
+
+        rec = next((r for r in layers or () if isinstance(r, dict) and r.get("layer") == LOGIN_LAYER), None)
+        blocked = [b for b, c in ((rec or {}).get("login") or {}).items() if c == BLOCKED]
+        if not blocked:
+            return ""
+        # 英文开头带一个空格：接在等待那句后面（中文句子直接相连）
+        return L("查流地址时没有读到 {} 里的 TikTok 登录，步骤见顶部那条提示。",
+                 " The stream URL lookup couldn’t read the TikTok sign-in from {}. The steps are in the "
+                 "notice at the top.").format(L("、", ", ").join(label(b) for b in blocked))
 
     LOGIN_SOURCE_BUDGET_SEC = 2.0     # 只读几个本地文件；到点没返回就记 null，不挡开播
     LOGIN_INCIDENT = "login-unreadable"   # 不带 "session:"：跨场保留，读到登录才撤
@@ -3423,14 +3477,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         sess["end"] = {"reason": "model_load_failed"}
         loop = asyncio.get_running_loop()
         # 未显式指定的参数用硬件推荐补齐。注意：backend/model/device/compute 是联动
-        # 整体，用户锁定 backend/device 时其余字段围绕它重新推导（见 hwdetect.py）
-        from .hwdetect import recommend
-        rec = recommend(backend=self.args.backend, device=self.args.device)
-        backend = rec["backend"]
-        model = self.args.model or rec["model"]
-        device = rec["device"]
-        compute = (self.args.compute_type if self.args.compute_type != "auto"
-                   else rec["compute_type"])
+        # 整体，用户锁定 backend/device 时其余字段围绕它重新推导（见 hwdetect.py）。
+        # 和自检那一行、待机时提前下载用同一份推导（app/asr.py asr_plan）
+        from .asr import asr_plan
+        rec = asr_plan(self.args)
+        backend, model, device, compute = rec["backend"], rec["model"], rec["device"], rec["compute"]
         print("[信息] 识别配置: backend={} model={} device={} ({})".format(
             backend, model, device, rec["note"]))
 
@@ -3452,6 +3503,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._stage(sess, "model_load", self.STAGE_MODEL_LOAD_SEC)
         # 上一场「改用 CPU」的加载被停止打断、还在线程里跑：先等它，别和下面的加载同时驻留两份
         await self._settle_fallback_load(key)
+        # 待机时点了「现在下载」、还没下完：先等它下完，下面的加载命中缓存，不并行起第二份下载
+        await self._settle_asr_fetch()
         if self._transcriber is None or self._transcriber_key != key:
             # 正在用的是出错后改用的 CPU 模型：先放掉再加载新配置，两个模型不同时驻留
             dropped_fallback = await self._drop_fallback_transcriber()
@@ -4500,9 +4553,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     MODEL_DOWNLOAD_POLL_SEC = 3.0
 
-    async def _model_download_progress(self, model):
+    async def _model_download_progress(self, model, report=None, baseline=None, share=None):
         """模型加载期间轮询 HuggingFace 缓存目录的增量，把下载进度推到 UI。
-        没有真的在下载（缓存已存在）时增量趋近于零，不会打扰用户。每 MODEL_DOWNLOAD_POLL_SEC 秒看一次。"""
+        没有真的在下载（缓存已存在）时增量趋近于零，不会打扰用户。每 MODEL_DOWNLOAD_POLL_SEC 秒看一次。
+        report 是 async (text, pct, mb) 回调：给了就交给它（待机时提前下载走 _provision_note，见
+        app/pipeline_asr_fetch.py），不给就照旧发 connecting 状态、带结构化的 progress。
+
+        增量从 baseline（缓存目录的字节数）算起；不给就开头量一次。share 是个 dict：给了就把量到的起点记进
+        share["baseline"]。提前下载用它记下自己的起点，下到一半点了开始，开播那边（_settle_asr_fetch）从同一个
+        起点算——不然进度从点开始那一刻重新从 0% 算，已经下好的几 GB 不算在里面。"""
         try:
             hf_home = os.environ.get("HF_HOME")
             cache = (Path(hf_home) / "hub" if hf_home
@@ -4521,7 +4580,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 return total
 
             loop = asyncio.get_running_loop()
-            baseline = await loop.run_in_executor(None, _du)
+            if baseline is None:
+                baseline = await loop.run_in_executor(None, _du)
+            if share is not None:
+                share["baseline"] = baseline
             expected = MODEL_SIZES_MB.get(model)
             while True:
                 await asyncio.sleep(self.MODEL_DOWNLOAD_POLL_SEC)
@@ -4545,6 +4607,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 # 结构化的进度（专家审查 U7）：页面中间那张「正在连接」卡片只认它，不去解析 detail 的文字——
                 # connecting 状态下 detail 几乎从不为空（本文件里有十来处在发），看到 detail 就显示会和顶部
                 # 横幅重复同一句话。只有这里带：其余 connecting 都不带这个键。pct 在模型大小未知时是 null
+                if report is not None:
+                    await report(text, pct, int(round(done_mb)))
+                    continue
                 await self.server.status("connecting", text, progress={
                     "kind": "model_download", "pct": pct, "mb": int(round(done_mb))})
         except asyncio.CancelledError:

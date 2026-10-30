@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=55">
+  <link rel="stylesheet" href="/static/style.css?v=70">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -396,7 +396,7 @@
       <div id="input-help" class="sp-help hidden">
         <p data-en="You can also paste a .flv or .m3u8 stream URL.">也可以直接粘贴 .flv / .m3u8 流地址。</p>
         <p data-en-html="For some live streams, TikTok doesn’t provide a stream URL to the app. In that case, <b>paste the live link and the .flv URL from your browser together</b>, separated by a space. The link is used for comments and glossaries, and the .flv URL for audio.">个别直播间 TikTok 不把流地址给程序。这时把<b>直播间链接和浏览器里的 .flv 地址一起粘进来</b>（中间空格隔开）：前者管弹幕和词表，后者作音频源。</p>
-        <p data-en="The speech model downloads the first time you start. Progress appears here.">首次识别需下载模型，进度会显示在页面上。</p>
+        <p data-en="The speech model downloads the first time you click Start, and captions wait until it finishes. To download it now, click Download Now in Settings > Startup Check > Speech Recognition.">识别模型在第一次点「开始翻译」时下载，字幕要等它下完。想现在就下，在「设置 > 启动自检 > 语音识别」里点「现在下载」。</p>
       </div>
 
       <div class="sp-options">
@@ -475,7 +475,8 @@
 
           <!-- 启动自检：把「功能悄悄坏了」变成看得见的红条。
                降噪曾经整整没跑起来，只在一行日志里说了句话，没人发现。
-               有失败项时 app.js 自动展开并把摘要标红（has-fail），全绿时收起。
+               有失败项时 app.js 自动展开并把摘要标红（has-fail），全绿时收起；「语音识别」一行带着
+               「现在下载」（识别模型还没下全）时也展开，下完照结论收起。
                图标是一盏真正的状态灯：颜色和图形一起变（app.js setSelfcheckIcon），
                不是只换背景色——之前「自检中…」还没出结果时就已经显示绿底对勾，
                颜色和文字自相矛盾（designer.md #1）。这里的初始态（灰色空盾牌）
@@ -855,6 +856,6 @@
   <script src="/static/live-ui.js?v=7"></script>
   <script src="/static/guard.js?v=6"></script>
   <script src="/static/flash.js?v=2"></script>
-  <script src="/static/app.js?v=84"></script>
+  <script src="/static/app.js?v=100"></script>
 </body>
 </html>

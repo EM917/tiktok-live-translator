@@ -230,7 +230,10 @@ def _resolve_fails(monkeypatch, login, kind="browser_only"):
 @pytest.mark.parametrize("login, kind, wants", [
     ({"chrome": bl.BLOCKED, "safari": bl.BLOCKED}, "browser_only", True),
     ({"safari": bl.BLOCKED, "chrome": bl.NOT_READ}, "browser_only", True),
-    ({"safari": bl.OK, "chrome": bl.BLOCKED}, "browser_only", False),     # 借到了：话里没有那一步
+    # 借到了、被拒的不是登录优先那一步要读的浏览器（Safari）：话里没有那一步
+    ({"safari": bl.OK, "chrome": bl.BLOCKED}, "browser_only", False),
+    # 2026-10-29：借到了 Chrome，可登录优先那一步要读的 Safari 被拒——话里有那一步，状态里带路径
+    ({"safari": bl.BLOCKED, "chrome": bl.OK}, "browser_only", True),
     ({"safari": bl.NOT_LOGGED_IN}, "browser_only", False),
     ({"safari": bl.BLOCKED}, "unknown", False),                          # 别的 kind 的话里没有那一步
     (None, "browser_only", False),
@@ -242,6 +245,8 @@ def test_the_error_status_carries_the_fda_paths_only_with_that_step(monkeypatch,
     p.BROWSER_ONLY_RETRY_SEC = 0.0
     targets = ["/opt/conda envs/bin/python3.13", "/Users/someone/.venv/bin/python"]
     monkeypatch.setattr(bl, "fda_targets", lambda environ=None, executable=None: list(targets))
+    # 登录优先那一步读哪个浏览器：固定成 Safari（没点名浏览器时就是它），不随跑测试的机器装了什么变
+    monkeypatch.setattr(resolver, "_login_first_browsers", lambda cookies_browser: ("safari",))
     _resolve_fails(monkeypatch, login, kind)
     sess = p._new_session_state(None)
     p._session_state = sess
