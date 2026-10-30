@@ -246,8 +246,9 @@ def test_selfcheck_rows_made_of_other_modules_text_reach_the_page_in_english(
     blocked = shown["login-blocked"]
     assert blocked["detail"].startswith("Chrome: macOS didn’t allow access; Safari: readable, but "
                                         "no TikTok sign-in cookie"), blocked
-    assert blocked["fix"].startswith("macOS didn’t allow the app to read browser data. Go to "
-                                     "System Settings > Privacy & Security > Full Disk Access")
+    assert blocked["fix"].startswith("macOS didn’t allow the app to read browser data. Follow these three "
+                                     "steps to turn on Full Disk Access for Python:\n1. Open System Settings > "
+                                     "Privacy & Security > Full Disk Access.")
     assert "“{}”".format(FDA_PATH) in blocked["fix"]
     assert blocked["fix"].endswith(" Sign in to TikTok in Chrome (or Safari), then try again.")
     assert shown["login-ok"]["detail"] == "Chrome: found a TikTok sign-in"

@@ -62,6 +62,9 @@
   var brandEmptyHint = document.getElementById("brand-empty-hint");
   var startBtn = document.getElementById("start-btn");
   var roomInputError = document.getElementById("room-input-error");
+  var asrHint = document.getElementById("asr-model-hint");          // 语音模型还没下载时的一行（renderAsrHint）
+  var asrHintText = document.getElementById("asr-model-hint-text");
+  var asrHintBtn = document.getElementById("asr-model-hint-btn");
   var recentRooms = document.getElementById("recent-rooms");
   var recentList = document.getElementById("recent-list");
   var recentClear = document.getElementById("recent-clear");
@@ -77,6 +80,8 @@
   var commentJump = document.getElementById("comment-jump");
   var engineSelect = document.getElementById("engine-select");
   var engineKey = document.getElementById("engine-key");
+  var engineWorkspaceRow = document.getElementById("engine-workspace-row");
+  var engineWorkspace = document.getElementById("engine-workspace");
   var engineSave = document.getElementById("engine-save");
   var engineActive = document.getElementById("engine-active");
   var engineNote = document.getElementById("engine-note");
@@ -1593,6 +1598,7 @@
     // 和本地服务断开期间「打开闪购助手」点了也发不出去：先禁用，重连后的 hello 再带回真实状态
     if (flashOpenBtn) flashOpenBtn.disabled = state === "offline";
     startBtn.disabled = state === "connecting";
+    syncAsrFetchBtn();      // 自检「语音识别」一行的「现在下载」：连接中、直播中置灰
     streamActive = active;
     updateFloatBtn();       // 浮窗按钮跟换主播同一条显示规则
     updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
@@ -3297,10 +3303,59 @@
       delete incidents[msg.id];
     } else {
       incidents[msg.id] = { level: msg.level || "warn", text: msg.text || "",
-                            since: msg.since || msg.ts || 0, ts: msg.ts };
+                            since: msg.since || msg.ts || 0, ts: msg.ts, recheck: !!msg.recheck };
     }
     drawIncidents();
   }
+
+  // 「我加好了，再查一次」（app/pipeline.py _recheck_browser_login）：「没有读到 TikTok 登录」那条在系统拒绝读取时带
+  // recheck，自检「浏览器登录态」那一行带「完全磁盘访问权限」那几步时也带（app/selfcheck.py _browser_login_row）。
+  // 2026-10-29 新 Mac 上，中控照着做完以后，点「开始翻译」之前没有任何地方告诉他成没成。点了让后端当场重看一次，
+  // 结果走 notice；页面上有这个按钮时，从系统设置切回窗口（先离开、再回来）也自动发一次，两次之间至少隔
+  // RECHECK_GAP_MS。自动发的带 auto：结果和上一次一样，后端就不再发 notice
+  var RECHECK_GAP_MS = 5000;
+  var lastRecheckAt = -Infinity;
+  var scRecheckShown = false;          // 自检那一行此刻带不带这个按钮（renderSelfcheck 记下）
+  var leftWithRecheck = false;         // 按钮在页面上时离开过窗口：回来时自动重查一次
+
+  function sendRecheck(auto) {
+    var msg = { type: "recheck_browser_login" };
+    if (auto) msg.auto = true;
+    if (!send(msg)) return false;
+    lastRecheckAt = Date.now();
+    return true;
+  }
+
+  function recheckButton(cls) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = cls;
+    btn.textContent = L("我加好了，再查一次", "Check Again");
+    btn.addEventListener("click", function () { sendRecheck(false); });
+    return btn;
+  }
+
+  function recheckOnPage() {
+    for (var k in incidents) if (incidents[k].recheck) return true;
+    return scRecheckShown;
+  }
+
+  function leaveWindow() {
+    if (recheckOnPage()) leftWithRecheck = true;
+  }
+
+  function backToWindow() {
+    if (!leftWithRecheck || !recheckOnPage()) return;
+    if (Date.now() - lastRecheckAt < RECHECK_GAP_MS) return;
+    if (sendRecheck(true)) leftWithRecheck = false;
+  }
+
+  window.addEventListener("blur", leaveWindow);
+  window.addEventListener("focus", backToWindow);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") leaveWindow();
+    else backToWindow();
+  });
 
   // 带上看到的那一条的 ts：这期间又跳了一次的话服务端不收，新的那次中控还没看到。
   // 发出去了才先在本页收起（等服务端的 clear 回来也是同样的结果）；连接断着时发不出去，
@@ -3315,7 +3370,7 @@
 
   // 超过 3 行的持续提示默认只露第一行，行尾跟「显示全部步骤」，和状态横幅同一个做法（U10，BANNER_FOLD_LINES）。
   // 眼下只有「没有读到 TikTok 登录」带完全磁盘访问权限那几步的那种（app/browser_login.py no_login_notice，第一行是
-  // 看到了什么、影响哪类直播间、在 Safari 里登录）：它读到登录之前一直挂在顶部、直播中也在，全展开 1000 宽下
+  // 登录优先那一步看到了什么、授权那几步的头一句）：它读到登录之前一直挂在顶部、直播中也在，全展开 1000 宽下
   // 八九行（审查第 1 轮）。持续提示每变一条整排重画：展开与否按 id 记、连同那段文字，重画时保留，文字变了重新
   // 折起来。按钮就地切换，不重画（键盘焦点留在按钮上）
   var incidentOpen = Object.create(null);   // id → 展开时的那段文字
@@ -3366,6 +3421,11 @@
       var text = stripStatusEmoji(incidents[k].text);
       setIconText(row, barIconFor(level), text);
       foldIncident(row.lastChild, k, text);
+      if (incidents[k].recheck) {
+        // 接在第一行的字（和「显示全部步骤」）后面：折着时也看得见
+        var span = row.lastChild;
+        span.insertBefore(recheckButton("incident-recheck"), span.querySelector(".incident-rest"));
+      }
       if (DISMISSABLE_INCIDENTS.indexOf(k) !== -1) {
         row.classList.add("dismissible");
         var closeBtn = document.createElement("button");
@@ -4355,8 +4415,76 @@
   var scLastSig = null;   // 结论没变就别动展开状态
   var SC_LEVEL_SR_TEXT = { warn: L("（提醒）", " (warning)"), fail: L("（未通过）", " (failed)") };
 
+  // 自检「语音识别」一行上的「现在下载」（app/selfcheck.py ACTION_DOWNLOAD_ASR，后端 app/pipeline_asr_fetch.py）：
+  // 待机时提前下载识别模型，不用等第一次开播。连接中、直播中、和本地服务断开、正在下载时置灰——服务端在
+  // 这些时候也不下。下完服务端重发这一行：模型下全了这一行就没有 action，按钮跟着没了
+  var asrFetchBtn = null;
+  var asrFetchBusy = false;
+  var ASR_FETCH_OFF_STATES = { connecting: true, live: true, offline: true };
+
+  function asrFetchLabel(sizeMb) {
+    var mb = Number(sizeMb) || 0;
+    if (!mb) return L("现在下载", "Download Now");
+    if (mb < 1000) return L("现在下载（约 {mb} MB）", "Download Now (about {mb} MB)").replace("{mb}", String(mb));
+    return L("现在下载（约 {gb} GB）", "Download Now (about {gb} GB)").replace("{gb}", (mb / 1000).toFixed(1));
+  }
+
+  // 首页那一行的大小：「约 3.1 GB」「约 484 MB」；不知道多大是空串（同 app/selfcheck.py _size_text）
+  function asrSizeText(sizeMb) {
+    var mb = Number(sizeMb) || 0;
+    if (!mb) return "";
+    if (mb < 1000) return L("约 {mb} MB", "about {mb} MB").replace("{mb}", String(mb));
+    return L("约 {gb} GB", "about {gb} GB").replace("{gb}", (mb / 1000).toFixed(1));
+  }
+
+  // 两颗按钮（自检里那颗、首页那颗）同一个置灰规则；首页那颗的字也在这里跟着 asrFetchBusy 变
+  function syncAsrFetchBtn() {
+    var off = asrFetchBusy || ASR_FETCH_OFF_STATES[statusState] === true;
+    if (asrFetchBtn) asrFetchBtn.disabled = off;
+    if (asrHintBtn) {
+      asrHintBtn.disabled = off;
+      asrHintBtn.textContent = asrFetchBusy ? L("正在下载…", "Downloading…") : L("现在下载", "Download Now");
+    }
+  }
+
+  // 两颗按钮点的都是这一下：发出去了才把两颗一起变成灰的「正在下载…」，只有服务端重发那一行才放回来
+  function startAsrFetch() {
+    if (!send({ type: "download_asr_model" })) return;    // 断开了：什么都没发出去，按钮照旧
+    asrFetchBusy = true;
+    if (asrFetchBtn) asrFetchBtn.textContent = L("正在下载…", "Downloading…");
+    syncAsrFetchBtn();
+  }
+
+  function asrFetchButton(c) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn small sc-action";
+    asrFetchBusy = !!c.busy;
+    btn.textContent = asrFetchBusy ? L("正在下载…", "Downloading…") : asrFetchLabel(c.size_mb);
+    btn.addEventListener("click", startAsrFetch);
+    return btn;
+  }
+
+  // 首页输入框下面那一行（#asr-model-hint，2026-10-29 用户选的 launch-2 A）：自检那一行收在「设置 > 启动自检」里，
+  // 只有提醒时整行折叠成「通过 · N 项提醒」，新装机的中控开播前看不到它。这一行跟自检那一行看同一个 action：
+  // 带着才出现（row 是那一行，没有就是 null），下好后服务端重发那一行、没有 action 了，这一行自己消失。
+  // 下载中这句话不变（确实还没下完），只有按钮变成灰的「正在下载…」；进度在顶部横幅里（_provision_note）。
+  // 连接中、直播中整个开始面板藏着（setStatus），这里不另外判断
+  function renderAsrHint(row) {
+    if (!asrHint) return;
+    asrHint.classList.toggle("hidden", !row);
+    if (!row) return;
+    var size = asrSizeText(row.size_mb);
+    asrHintText.textContent = size
+      ? L("语音模型还没下载（{size}）", "The speech model isn’t downloaded yet ({size})").replace("{size}", size)
+      : L("语音模型还没下载", "The speech model isn’t downloaded yet");
+  }
+
+  if (asrHintBtn) asrHintBtn.addEventListener("click", startAsrFetch);
+
   function renderSelfcheck(msg) {
     if (!scBox || !msg.checks) return;
+    scRecheckShown = msg.checks.some(function (c) { return !!c.recheck; });
     var sum = msg.summary || {};
     scBox.classList.remove("hidden");
     scHead.classList.toggle("has-fail", sum.fail > 0);
@@ -4368,6 +4496,9 @@
     setSelfcheckIcon(scSum.icon);
     scSummary.title = scSummary.textContent;
     scList.innerHTML = "";
+    asrFetchBtn = null;
+    asrFetchBusy = false;
+    var asrRow = null;
     msg.checks.forEach(function (c) {
       var li = document.createElement("li");
       li.className = "sc-item " + c.level;
@@ -4390,16 +4521,27 @@
         var fix = document.createElement("span");
         fix.className = "sc-fix";
         fix.textContent = c.fix;   // 不再拼「→」：这不是链接，没法点（designer.md #1）
+        if (c.recheck) fix.appendChild(recheckButton("btn small sc-recheck"));   // 「我加好了，再查一次」，在那几步下面
         detail.appendChild(fix);
+      }
+      if (c.action === "download_asr_model") {
+        asrRow = c;
+        asrFetchBtn = asrFetchButton(c);
+        detail.appendChild(asrFetchBtn);
       }
       li.appendChild(name);
       li.appendChild(detail);
       scList.appendChild(li);
     });
+    renderAsrHint(asrRow);
+    syncAsrFetchBtn();
     // 只有结论真的变了才自动展开/收起。重连会重放一次 hello，
     // 那时若无条件重置，正在看明细的人会被收起来。自检这一行的规则是「签名
     // 一变就无条件同步」——从「有失败」变回「全绿」也要跟着收起，所以直接用
     // r.open，不像引擎回退提示那样还要额外判断（见 nextAutoOpen 的注释）
+    //
+    // 「语音识别」一行带着「现在下载」也只是提醒，不展开：首页输入框下面那一行在说（renderAsrHint）。
+    // 2026-10-29 用户在 launch-2 的三种做法里选的是首页这一行（A），不是让这一行自己展开（B）
     var r = nextAutoOpen(scLastSig, scSum.sig, sum.fail > 0);
     scLastSig = r.sig;
     if (r.changed) setSelfcheckOpen(r.open);
@@ -4637,6 +4779,9 @@
     none: L("只显示识别原文，不翻译。", "Shows the original text without translating.")
   };
   var engineKeys = {};
+  var engineWorkspaceId = "";   // 在用的 Claude 工作区 ID（不是密钥，服务端照原样给；没填是空串）
+  // 工作区 ID 的样子（app/translator.py WORKSPACE_ID_RE）：不像就不发，免得刚粘贴的密钥跟着白填
+  var WORKSPACE_ID_RE = /^wrkspc_[A-Za-z0-9_-]+$/;
   var engineNoteSig = null;   // 上一次的回退提示；变了才自动展开，重连回放不反复弹开
 
   // 引擎被回退时摘要前面加的小三角（跟 .sc-icon 同一套线性画法，颜色固定橙——
@@ -4651,6 +4796,7 @@
   function renderEngine(info) {
     if (!engineSelect) return;
     engineKeys = info.keys || {};
+    engineWorkspaceId = typeof info.workspace_id === "string" ? info.workspace_id : "";
     engineSelect.value = info.engine || "auto";
     commentRedoEngine = info.active || "";
     syncAllCommentRedo();     // 字幕引擎换了：已经画出来的「重译」按钮跟着变灰或可点
@@ -4702,6 +4848,10 @@
       engineKey.placeholder = have ? L("已填 " + have + "（留空则沿用）", "Saved key " + have + " (leave blank to keep)")
                                    : L("粘贴 API 密钥", "Paste API key");
     }
+    // 工作区 ID 只有 Claude 要（不绑工作区的密钥）：选别的引擎时收起，框里回到在用的那个
+    var claude = engineSelect.value === "claude";
+    if (engineWorkspaceRow) engineWorkspaceRow.classList.toggle("hidden", !claude);
+    if (engineWorkspace) engineWorkspace.value = engineWorkspaceId;
     // 字幕会发到外部服务的几档：前面加三角图标（以前是 ⚠️ 前缀），颜色仍由 .warn 给
     var sendsOut = engineSelect.value in KEY_ENV || engineSelect.value === "google";
     if (sendsOut) setIconText(engineNote, "warn", NOTES[engineSelect.value] || "");
@@ -4712,10 +4862,24 @@
   if (engineSelect) {
     engineSelect.addEventListener("change", syncEngineRow);
     engineSave.addEventListener("click", function () {
+      var claude = engineSelect.value === "claude";
+      var workspace = claude && engineWorkspace ? engineWorkspace.value.trim() : null;
+      if (workspace && !WORKSPACE_ID_RE.test(workspace)) {
+        // 和服务端那句同一句（app/pipeline.py set_engine）：服务端也会拦，这里先拦是为了不清掉密钥框
+        setIconText(engineNote, "warn", L("工作区 ID 是 wrkspc_ 开头的一串字母和数字（Claude Console 的 Workspaces 页面上有），" +
+                                          "这次没有保存，请检查后再点「保存」",
+                                          "A workspace ID starts with wrkspc_ followed by letters and numbers. It’s listed on " +
+                                          "the Workspaces page in the Claude Console. Nothing was saved. Check it and click " +
+                                          "Save again."));
+        engineNote.classList.add("warn");
+        return;
+      }
       engineSave.disabled = true;
       engineSave.textContent = L("切换中…", "Switching…");
-      send({ type: "set_engine", engine: engineSelect.value,
-             api_key: engineKey.value || null });
+      var msg = { type: "set_engine", engine: engineSelect.value,
+                  api_key: engineKey.value || null };
+      if (claude) msg.workspace_id = workspace;
+      send(msg);
       engineKey.value = "";
       setTimeout(function () {
         engineSave.disabled = false;

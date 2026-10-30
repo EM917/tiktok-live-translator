@@ -187,6 +187,7 @@ def _has_console():
 
 
 _INFO_DIALOG = None
+_LAUNCH_DIALOG = None     # 第一跳起的「正在启动」提示（osascript 进程），见 _start_launch_dialog
 _FIRST_RUN_SHOWN = False
 
 
@@ -217,10 +218,63 @@ def _close_info_dialog():
     _INFO_DIALOG = None
 
 
+def _start_launch_dialog():
+    """第一跳一开始：「正在启动」的非阻塞提示，osascript 自己等 4 秒再弹（app/bootstrap.launch_dialog_argv）。
+    启动快于 4 秒，窗口出来时它还没弹就被关掉了。只在 macOS、没有终端、不是 CI 时起；上一跳已经起过（环境变量里
+    有它的 PID）就不再起。2026-10-29：从「聚焦搜索」点开 .app 之后半分钟到一分钟没有任何窗口，用户以为没反应。"""
+    global _LAUNCH_DIALOG
+    if os.environ.get("CI") or _has_console() or sys.platform != "darwin":
+        return
+    from app import bootstrap
+    if os.environ.get(bootstrap.LAUNCH_DIALOG_ENV):
+        return
+    try:
+        _LAUNCH_DIALOG = subprocess.Popen(bootstrap.launch_dialog_argv(),
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        _LAUNCH_DIALOG = None
+
+
+def _close_launch_dialog():
+    """关掉「正在启动」的提示：本进程自己起的直接关；上一跳交过来的（exec 前没关，PID 在环境变量里）核对过
+    确实是自己的 osascript 子进程再关（app/bootstrap.close_handed_dialog）。开好窗口、要弹出错对话框、
+    要换成安装说明、进程退出时都走这里，重复调用没有副作用。"""
+    global _LAUNCH_DIALOG
+    if _LAUNCH_DIALOG is not None and _LAUNCH_DIALOG.poll() is None:
+        try:
+            _LAUNCH_DIALOG.terminate()
+        except Exception:
+            pass
+    _LAUNCH_DIALOG = None
+    try:
+        from app import bootstrap
+        bootstrap.close_handed_dialog()
+    except Exception:
+        pass
+
+
+def _hand_off_dialogs():
+    """exec 之前：开着的提示框不关——换进最终进程之后还要 import、起后端、等后端才开窗口，以前这一段什么提示都
+    没有。安装说明开着就交它（它说的「完成后字幕窗口会自动打开」这时照样成立），否则交「正在启动」；PID 放进
+    环境变量（execve 不换 PID，它仍是最终进程的子进程），最终进程开好窗口后关。交不出去的那个关掉。"""
+    global _INFO_DIALOG, _LAUNCH_DIALOG
+    from app import bootstrap
+    alive = [d for d in (_INFO_DIALOG, _LAUNCH_DIALOG) if d is not None and d.poll() is None]
+    keep = alive[0] if alive else None
+    for d in alive[1:]:
+        try:
+            d.terminate()
+        except Exception:
+            pass
+    bootstrap.hand_off_dialog(keep.pid if keep is not None else None)
+    _INFO_DIALOG = _LAUNCH_DIALOG = None
+
+
 def _fail_alert(message):
     """报告致命问题：终端打印之外，无终端时必须弹系统对话框——否则用户只会看到
     程序无声消失。"""
     print("⚠️ " + message)
+    _close_launch_dialog()        # 「正在启动」不能和出错的对话框叠在一起，也不能在出错之后还挂着
     if os.environ.get("CI") or _has_console():
         return
     try:
@@ -257,6 +311,7 @@ def _first_run_dialog(text=None):
     if _FIRST_RUN_SHOWN:
         return
     _FIRST_RUN_SHOWN = True
+    _close_launch_dialog()        # 「正在启动」换成安装说明
     _info_dialog(text or L("首次运行：正在自动安装运行组件（约需 2–5 分钟，取决于网速）。\n"
                            "完成后字幕窗口会自动打开——请耐心等待，不要重复打开程序。",
                            "First launch: installing the app’s components (about 2–5 minutes, "
@@ -312,6 +367,13 @@ def ensure_env():
     _forget_ready()
     vpy = _venv_python()
     in_project_venv = Path(sys.prefix).resolve() == (ROOT / ".venv").resolve()
+    if not in_project_venv:
+        # 第一跳：这一次启动的时间点从这里记起（logs/bootstrap-*.log，之后几跳接着写），没有终端时起「正在启动」
+        # 的提示。2026-10-29 那次半分钟到一分钟没有窗口，日志里却没有一个时间点，花在哪儿查不出来
+        from app import bootstrap as boot
+        boot.start_launch_log(ROOT)
+        boot.launch_mark("第一跳开始（{}）".format(sys.executable))  # i18n: terminal
+        _start_launch_dialog()
     lock = None
     ready = False         # 第一跳确认指纹没变：不再检查、不装，直接换进 .venv（I9）
     deferred = False      # 要装，但本程序已经在跑：这次不装（I7）
@@ -373,16 +435,20 @@ def ensure_env():
         plan = None
         imports_ok = False
         if not ready:
+            bootstrap.launch_mark("import 检查开始")  # i18n: terminal
             check = subprocess.run(
                 [pip_python, "-c",
                  _ready_import()],
                 capture_output=True,
             )
             imports_ok = check.returncode == 0
+            bootstrap.launch_mark("import 检查结束（退出码 {}）".format(check.returncode))  # i18n: terminal
             # 核心模块都在、只是 requirements.txt 和上次装成功的那份不一样（更新带来了
             # 新依赖）：也要补装。以前这一步只看 import，新依赖永远没人装。
             # 装不装、弹什么、过多久弹，在 bootstrap.plan_install 里（这里测不了）
             plan = bootstrap.plan_install(imports_ok, ROOT, recorded, target_version)
+        else:
+            bootstrap.launch_mark("就绪指纹没变，跳过 import 检查")  # i18n: terminal
         # I7：现有的 .venv 能跑、只是清单变了要补装，而端口上已经有本程序在跑（直播中从 Start.command、
         # Start.bat 或命令行又开了一次），它可能正用着这个 .venv：pip 换掉它脚下的包，它之后的延迟导入
         # 可能拿到装了一半的东西。这次不装，照常换进 .venv——最终进程会认出已有实例、把窗口叫到前台；
@@ -409,11 +475,14 @@ def ensure_env():
             print("[初始化] 正在安装依赖（含内置 ffmpeg，可能需要几分钟）…")
             # pip 的输出同时进终端和 logs/bootstrap-*.log：双击 .app 时 stdout 是
             # /dev/null，以前装失败了什么都不留
-            log_path = bootstrap.new_log_path(ROOT, "bootstrap")
+            # 这一次启动的日志已经建了（第一跳）就接着写，时间点和 pip 输出在同一个文件里
+            log_path = bootstrap.launch_log_path() or bootstrap.new_log_path(ROOT, "bootstrap")
+            bootstrap.launch_mark("pip 开始")  # i18n: terminal
             try:
                 bootstrap.install_requirements(pip_python, ROOT, _CORE_DEPS, _optional_deps(),
                                                log_path=log_path)
             finally:
+                bootstrap.launch_mark("pip 结束")  # i18n: terminal
                 if timer is not None:
                     timer.cancel()
         if not in_project_venv:
@@ -423,7 +492,9 @@ def ensure_env():
                 except OSError:
                     pass
                 lock = None
-            _close_info_dialog()      # 马上换进新环境开窗口，安装提示框可以收了
+            # 提示框不关：换进去之后还要 import、起后端、等后端才开窗口。PID 交给最终进程，它开好窗口再关
+            _hand_off_dialogs()
+            bootstrap.launch_mark("换进最终进程（exec）")  # i18n: terminal
             # exec 不替 Python 冲输出缓冲：stdout 不是终端（`| tee`、重定向到文件）时，上面打的
             # [初始化] 几行会跟着丢掉
             from app.relaunch import flush_std
@@ -804,6 +875,7 @@ async def main_async(args, state=None):
     print(f"字幕界面已启动: {url}")
     if state is None and not args.no_open:
         webbrowser.open(url)
+        _close_launch_dialog()
 
     if args.demo:
         await pipeline.start_demo()
@@ -859,8 +931,14 @@ def main():
         from app.macbundle import relaunch_inside_bundle
         relaunch_inside_bundle(ROOT)
     # 推迟安装的记号（I7）到最终进程为止：不传给一键更新的重启和以后起的子进程
-    from app.bootstrap import clear_install_deferred
+    from app.bootstrap import clear_install_deferred, launch_mark
     clear_install_deferred()
+    # 上一跳交过来的「正在启动」提示：开好窗口时关（run_with_window）；走不到那一步（浏览器模式、出错、
+    # 直接退出）也在进程退出时关掉，不留一个挂着的「正在启动」
+    # （双击两次、浏览器模式下打开已有实例那条路，main() 直接 return，就靠这一句关）
+    import atexit
+    atexit.register(_close_launch_dialog)
+    launch_mark("最终进程开始（{}）".format(sys.executable))  # i18n: terminal
     # 到这里一定是最终进程了：本进程第一次读设置（损坏就在这里备份，界面提示和审计都拿得到），
     # 闸开着、设置里还没有 ui_lang 时迁移写一次，然后定下界面语言
     i18n.settle(ROOT)
@@ -1013,6 +1091,7 @@ def run_with_window(args):
         loc = confirm_localization_kwargs(webview.create_window, lang)
         window = webview.create_window(i18n.text(APP_NAME, lang), existing.url,
                                        width=1000, height=760, min_size=(420, 480), **loc)
+        _close_launch_dialog()
         # 语言切换发生在另一个进程里，这个进程收不到：页面重载后经 JS 桥告诉窗口。
         # 建窗时没传 localization 的，切换时也不往里写（app/window_lang.py）
         expose_window_lang(window, expose_attention(window), localized=bool(loc))
@@ -1066,6 +1145,8 @@ def run_with_window(args):
         thread.join()
         return
 
+    from app.bootstrap import end_launch, launch_mark
+    launch_mark("后端就绪（端口 {}）".format(state["ready_port"]))  # i18n: terminal
     url = "http://127.0.0.1:{}".format(state["ready_port"])
     from app.macbrand import brand_mac_app
     from app.window_attention import expose_attention
@@ -1093,6 +1174,9 @@ def run_with_window(args):
         loc = localization_kwargs(webview.create_window, lang)
         window = webview.create_window(i18n.text(APP_NAME, lang), url,
                                        width=1000, height=760, min_size=(420, 480), **loc)
+        launch_mark("窗口创建")  # i18n: terminal
+        end_launch()
+        _close_launch_dialog()    # 窗口马上就出来（webview.start 要等窗口关了才返回，所以在它之前关）
         guard_close(window, state.get("pipeline"))
         if float_host is not None:
             # 主窗口一关浮窗跟着关：否则 GUI 循环不退出，下面的收尾（停管线）不会执行。
@@ -1114,6 +1198,7 @@ def run_with_window(args):
         if float_host is not None:
             state["pipeline"].detach_float_host()    # 浏览器里没有浮窗：别让页面画出按钮
         webbrowser.open(url)
+        _close_launch_dialog()
         thread.join()
         return
 
