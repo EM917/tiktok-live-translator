@@ -43,6 +43,7 @@ import aiohttp
 import pytest
 
 from app import i18n
+from tests import socket_net
 from tests.i18n_dom import scenarios as S
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -409,10 +410,13 @@ def run_chrome_cdp(chrome, url, size, lang, profile, shot=None):
                     CHROME_TIMEOUT_SEC, url, _tail(err)))
             time.sleep(0.1)
             ws_url = devtools_url(err, profile)
+        # 调试端口是 Chrome 自己挑的、不是本进程绑的：读到以后登记给测试总网（tests/socket_net.py），只在这一次
+        # DevTools 会话里放行
         try:
-            dom, png = asyncio.run(asyncio.wait_for(
-                cdp_scan(ws_url, url, size, deadline, shot is not None),
-                timeout=max(1.0, deadline - time.monotonic())))
+            with socket_net.allowing(urlsplit(ws_url).port):
+                dom, png = asyncio.run(asyncio.wait_for(
+                    cdp_scan(ws_url, url, size, deadline, shot is not None),
+                    timeout=max(1.0, deadline - time.monotonic())))
         except asyncio.TimeoutError:
             raise ChromeNoResult("Chrome {} 秒没有给出结果，已杀掉整个进程组：{}\n{}".format(
                 CHROME_TIMEOUT_SEC, url, _tail(err))) from None
