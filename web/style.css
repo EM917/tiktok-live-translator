@@ -445,7 +445,7 @@ select:focus-visible, .btn:focus-visible { outline: 2px solid transparent; box-s
   }
 }
 
-/* 闪购（本机闪购助手的只读状态，docs/flash-sale.md）：和浮窗同一种画法（图标 + .btn-label），首页和直播中都在。
+/* 闪购（本机闪购助手的状态，0.8.0 起可开始、停止、继续，docs/flash-sale.md）：和浮窗同一种画法（图标 + .btn-label），首页和直播中都在。
    要人处理时（app.js 给它加 .attn）橙字橙底，右上角再加一个 7px 的实心橙点：形状和颜色一起变（designer.md #1），
    橙点绝对定位、不占宽度。点用 --orange-ink 不用 --orange：色弱的人靠的就是这个点，--orange 叠在橙底上浅色只有
    1.93:1，不到非文字元素的 3:1（tests/test_contrast.py 钉着）。不用红字配淡红底：深色下只有 4.27:1（tests/test_contrast.py 钉着橙色这一对 ≥ 4.5）。
@@ -1272,10 +1272,17 @@ html:not([lang="en"]) .en-page-only { display: none; }
 .target-hint .btn { margin-top: 10px; }
 
 /* ---------- 闪购浮层（web/flash.js 画内容） ----------
-   只读：标题、状态胶囊、×；一两句最要紧的话；摘要；商品表（每行标题一行省略号 + 状态药丸，下面一行细节）；
-   「最近记录」（时刻 + 级别图标 + 闪购助手的原话）；「打开闪购助手」。颜色之外都带形状：胶囊和药丸里
+   标题、状态胶囊、×；顶部一排按钮（开始 / 停止 / 继续，闪购助手 0.8.0 起；「打开闪购助手」）和它旁边的一句、
+   指令结果的一句；一两句最要紧的话；摘要；商品表（每行 #序号 + 标题一行省略号 + 状态药丸，下面一行细节）；
+   「最近记录」（时刻 + 级别图标 + 闪购助手的原话）。颜色之外都带形状：胶囊和药丸里
    要处理 / 已停止是三角、运行中 / 进行中是实心点、其余是空心圈；记录的级别是八角 / 三角 / ⓘ 加左边线 */
 .flash-panel.popover { width: min(440px, calc(100vw - 24px)); }
+/* 顶部一排：放不下就折行，不横向撑出浮层（G10 的 flash-ctl-* 场景在 1000px 量）。按下的那颗变成不能点或藏起来时
+   焦点落在这一排本身（app.js，tabindex="-1"）：键盘过来的才画焦点环，同 #flash-products */
+.flash-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.flash-ctl:focus { outline: none; }
+.flash-ctl:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); border-radius: 8px; }
+.flash-ctl-note { margin-top: 6px; font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); word-break: break-word; }
 .flash-state, .flash-pill {
   display: inline-flex; align-items: center; gap: 5px; flex: none;
   font-size: var(--fs-footnote); font-weight: 500; color: var(--label-2); white-space: nowrap;
@@ -1297,6 +1304,8 @@ html:not([lang="en"]) .en-page-only { display: none; }
 .flash-line.attn { color: var(--label); }
 .flash-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .flash-summary { margin-top: 10px; font-size: var(--fs-footnote); color: var(--label-2); font-variant-numeric: tabular-nums; }
+/* 摘要的每一段（flash.js renderFlashPanel）：放不下时整段换到下一行，不从「两轮之间 1」中间折开；一段比一行还宽才在段里折 */
+.flash-summary-part { display: inline-block; }
 .flash-products { list-style: none; margin-top: 6px; }
 /* 点开「还有 N 个」时焦点落在这张表上（app.js；按钮自己藏起来了）：键盘过来的才画焦点环 */
 .flash-products:focus { outline: none; }
@@ -1304,6 +1313,8 @@ html:not([lang="en"]) .en-page-only { display: none; }
 .flash-row { padding: 7px 0; border-top: 0.5px solid var(--separator); }
 .flash-row:first-child { border-top: 0; }
 .flash-row-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* 卡片序号（#12）：在标题前、不跟着标题一起被省略号吃掉 */
+.flash-pos { flex: none; font-size: var(--fs-footnote); color: var(--label-2); font-variant-numeric: tabular-nums; }
 .flash-title {
   flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: var(--fs-callout); color: var(--label);
@@ -1329,8 +1340,8 @@ html:not([lang="en"]) .en-page-only { display: none; }
 .flash-alert[data-level="warn"] .flash-lv { color: var(--orange-ink); }
 .flash-alert-text { min-width: 0; color: var(--label); word-break: break-word; }
 .flash-alert.new .flash-alert-text { font-weight: 600; }
-.flash-foot { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
-.flash-version { font-size: var(--fs-footnote); color: var(--label-2); }
+.flash-version { margin-top: 14px; font-size: var(--fs-footnote); color: var(--label-2); }
+.flash-version:empty { display: none; }
 .flash-note { margin-top: 8px; font-size: var(--fs-footnote); line-height: 18px; color: var(--label); word-break: break-word; }
 
 /* ---------- 手机同看 ---------- */

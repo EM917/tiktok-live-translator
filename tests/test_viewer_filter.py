@@ -25,8 +25,9 @@ KNOWN_TYPES = (
     "history_cleared",
     # 弹幕留意（PR-3，用户决定 8）：标红、提示条、关注名单一律不发手机，三种新类型都不进白名单
     "comment_guard", "guard_event", "guard_mark",
-    # 顶栏「闪购」（app/pipeline_flash.py）：本机另一个程序的商品和记录，只在中控电脑上显示
-    "flash_sale",
+    # 顶栏「闪购」（app/pipeline_flash.py）：本机另一个程序的商品和记录，只在中控电脑上显示；
+    # 浮层里开始、停止、继续的结果同样只给中控电脑（手机上没有这些按钮）
+    "flash_sale", "flash_control_result",
 )
 
 ALLOWED_TYPES = frozenset({

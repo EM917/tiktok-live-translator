@@ -19,6 +19,8 @@
       "stock_total": 30,
       "renewals": 0,
       "enabled": true,
+      "position": null,
+      "skip": null,
       "stuck": false
     },
     {
@@ -32,6 +34,8 @@
       "stock_total": 10,
       "renewals": 0,
       "enabled": true,
+      "position": null,
+      "skip": null,
       "stuck": false
     },
     {
@@ -45,6 +49,8 @@
       "stock_total": 30,
       "renewals": 3,
       "enabled": true,
+      "position": null,
+      "skip": null,
       "stuck": true
     },
     {
@@ -58,6 +64,8 @@
       "stock_total": 80,
       "renewals": 0,
       "enabled": true,
+      "position": null,
+      "skip": null,
       "stuck": false
     },
     {
@@ -71,6 +79,8 @@
       "stock_total": 10,
       "renewals": 0,
       "enabled": true,
+      "position": null,
+      "skip": null,
       "stuck": false
     },
     {
@@ -84,6 +94,8 @@
       "stock_total": null,
       "renewals": 0,
       "enabled": true,
+      "position": null,
+      "skip": null,
       "stuck": false
     },
     {
@@ -97,6 +109,8 @@
       "stock_total": 5,
       "renewals": 0,
       "enabled": true,
+      "position": null,
+      "skip": null,
       "stuck": false
     },
     {
@@ -110,6 +124,8 @@
       "stock_total": 10,
       "renewals": 0,
       "enabled": true,
+      "position": null,
+      "skip": null,
       "stuck": false
     },
     {
@@ -123,6 +139,8 @@
       "stock_total": 3,
       "renewals": 0,
       "enabled": true,
+      "position": null,
+      "skip": null,
       "stuck": false
     }
   ],
@@ -162,5 +180,6 @@
   "attention": [
     "stuck"
   ],
-  "stuck_count": 1
+  "stuck_count": 1,
+  "control": null
 }

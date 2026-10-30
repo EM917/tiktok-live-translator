@@ -95,6 +95,17 @@ test("商品行和摘要：倒计时、轮次、库存、续开次数分单复�
                "9 products: 1 stopped · 1 ready to start · 1 unclear · 3 ongoing · 1 between rounds · " +
                "1 with no flash sale · 1 ended manually");
   assert.equal(F.flashSummary([product("live")]), "1 product: 1 ongoing");
+  // 每段一个 .flash-summary-part：440px 的浮层放不下时不把 "1 between rounds" 从中间折开（截图 2026-10-28）
+  assert.deepEqual(F.flashSummaryParts(SAMPLE.products), { lead: "9 products: ", parts: ["1 stopped", "1 ready to start",
+    "1 unclear", "3 ongoing", "1 between rounds", "1 with no flash sale", "1 ended manually"] });
+  assert.deepEqual(F.flashSummaryParts([product("live")]), { lead: "1 product: ", parts: ["1 ongoing"] });
+  const sdoc = makeFlashDoc();
+  const sels = makeEls(sdoc);
+  F.renderFlashPanel(sdoc, sels, SAMPLE, { now: NOW });
+  assert.deepEqual(sels.summary.children.map((el) => el.textContent),
+                   ["9 products: 1 stopped", "1 ready to start", "1 unclear", "3 ongoing", "1 between rounds",
+                    "1 with no flash sale", "1 ended manually"]);
+  assert.equal(sels.summary.textContent, F.flashSummary(SAMPLE.products));
   assert.equal(F.flashSummary([product("live"), product("odd")]), "2 products: 1 ongoing · 1 other");
   assert.equal(F.flashSummary([product("live"), product("stopped")], 310), "310 products: 1 stopped · 1 ongoing · 308 not listed");
   assert.equal(F.flashMoreText(1), "1 more");

@@ -112,6 +112,18 @@ FLOAT_MEASURE = (".f-root", "#f-caption", "#f-comments")
 # 设置行展开、直播中抽屉的「最近需要留意」页签、抽屉的「关注名单」页签、熔断后的胶囊与「本场重新启用」
 GUARD_NAMES = ("home-guard", "live-guard", "live-guard-marked", "live-guard-tripped")
 GUARD_ZH = tuple(n + "-zh" for n in GUARD_NAMES)
+# 闪购浮层顶部那一排（开始、停止、继续、打开闪购助手；闪购助手 0.8.0 起，docs/flash-sale.md §9）的几种样子，
+# 英文页进 G10 的扫描，中文页（-zh）核对中文、出截图；两种都在默认窗口 1000px 量浮层和这一排（flash_ctl_state、
+# flash_ctl_scenario）。idle 没在运行（出开始）、armed 点了一下开始（「再点一次开始」）、running 在运行（出停止）、
+# paused 确认框里点了取消的暂停（停止加继续）、awaiting 弹着确认框（停止不能点）、old 闪购助手 0.7.3（只剩打开）、
+# starting 开始被接受、页面刷新中（不变色、「正在开始…」）、skip 带 0.8.2 的不续开原因和卡片序号、rejected 闪购助手
+# 回了 409 busy（浮层里那一句）
+FLASH_CTL_KINDS = ("idle", "armed", "running", "paused", "awaiting", "old", "starting", "skip", "rejected")
+FLASH_CTL_NAMES = tuple("flash-ctl-" + k for k in FLASH_CTL_KINDS)
+FLASH_CTL_ZH = tuple(n + "-zh" for n in FLASH_CTL_NAMES)
+FLASH_CTL_SIZE = (1000, 760)              # 默认窗口（docs/i18n-style.md §4.1）
+FLASH_CTL_MEASURE = ("#flash-panel", "#flash-ctl", "#flash-start", "#flash-stop", "#flash-resume", "#flash-open",
+                     "#flash-ctl-note", "#flash-note", "#flash-headline", "#flash-products")
 # 直播中在「字幕译成」里选了另一种界面语言（英文页选简体中文、中文页选 English）：下拉下面弹出就地提示，
 # 带切换界面的按钮。窗口模式（带浮窗按钮）默认的 1000px 宽；英文页进扫描，中文页只量。键是场景名，值是
 # (基础场景, 页面上当前的目标, 选哪一项)
@@ -119,7 +131,7 @@ HINT_WIDTH = 1000
 HINTS = {"live-hint": ("live-float", "en", "zh-CN"), "live-hint-zh": ("live-float-zh", "zh-CN", "en")}
 DESKTOP_EN = ("home-idle", "home-selfcheck-fail", "live-full", "live-float", "connecting", "offline",
               "error-4003110", "live-bad", "reconnect-no-audio", "live-flash", "home-flash",
-              "home-asr-fetch", "live-hint") + GUARD_NAMES
+              "home-asr-fetch", "live-hint") + GUARD_NAMES + FLASH_CTL_NAMES
 # 新装机、语音模型还没下载的首页（输入框下面那一行 #asr-model-hint 和自检里的「现在下载」）：英文那份进上面的扫描，
 # 两份都量这一行放不放得下（tests/test_i18n_dom.py）
 ASR_FETCH_HOMES = ("home-asr-fetch", "home-asr-fetch-zh")
@@ -747,7 +759,12 @@ FLASH_ZH_ALERT = "📦 Calm Gel Mask x4 (Fictional): 1 个规格库存不足 5,�
 
 
 def flash_state(now_ms=None):
-    doc = json.loads(FLASH_FIXTURE.read_text(encoding="utf-8"))
+    return _flash_tracked(json.loads(FLASH_FIXTURE.read_text(encoding="utf-8")), now_ms)
+
+
+def _flash_tracked(doc, now_ms=None, stale=False):
+    """doc（闪购助手 /status 原样的回话）经 flash_sale.StatusTracker 规整：0 秒、60 秒各喂一次。stale：updated_at 停在
+    60 秒那一刻，再过 STALE_SEC 多一秒又喂一次，就成了陈旧（page=error 时闪购助手不刷新 updated_at，契约）。"""
     updated = flash_sale.parse_iso(doc["updated_at"])
     tracker = flash_sale.StatusTracker()
     tracker.update("ok", copy.deepcopy(doc), 0.0)
@@ -756,6 +773,8 @@ def flash_state(now_ms=None):
     later["updated_at"] = datetime.fromtimestamp(updated + flash_sale.STUCK_SEC, timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     state = tracker.update("ok", later, float(flash_sale.STUCK_SEC))
+    if stale:
+        state = tracker.update("ok", copy.deepcopy(later), float(flash_sale.STUCK_SEC + flash_sale.STALE_SEC + 1))
     shift = int(now_ms if now_ms is not None else time.time() * 1000) + 10 * 60 * 1000 - int(round(updated * 1000))
     for product in state["products"]:
         for key in ("ends_ms", "next_ms"):
@@ -763,7 +782,75 @@ def flash_state(now_ms=None):
                 product[key] += shift
     for alert in state["alerts"]:
         alert["at_ms"] += shift
+    if state["updated_ms"] is not None:
+        state["updated_ms"] += shift
     return state
+
+
+# flash-ctl-* 的闪购助手：带控制接口的版本（契约「控制(0.8.0 起)」），而且报得出 next_to_pin（0.9.2 起）；
+# old 那一份是 0.8.0 以前的
+FLASH_CTL_VERSION = "0.9.2"
+FLASH_CTL_OLD_VERSION = "0.7.3"
+# skip 那一份：商品 product_id 的末两位 → (卡片序号, 不续开的原因, 换成的 state)。契约 0.8.2 的五个原因代码、0.9.2 的
+# next_to_pin（1 号位正下方那个）各一个，外加一个认不出的（页面原样显示）；两个没有序号（同一档里排最后）。
+# 已停止的那个标了 no_stock，就不算卡住。slot_1 和 next_to_pin 同时出现是 0.9.2 的样子（有置顶时两个都留）；0.9.2.1 起
+# 有置顶时不再报 slot_1（那个样子在 tests/fixtures/flash_sale/shared-rules.json 的 waiting_renewal 里，这里不加）
+FLASH_CTL_SKIP = {
+    "04": (1, "slot_1", None), "01": (2, "next_to_pin", None), "03": (3, "no_stock", None),
+    "08": (4, "max_renewals", None),
+    "02": (5, None, None), "06": (6, "auto_start_off", "pending"), "07": (None, "no_position", None),
+    "09": (None, None, None), "05": (9, "brand_new_reason", None),
+}
+# rejected 那一份：hello 之后到的一条结果（闪购助手 409 busy：刚点了开始不到 20 秒，契约）
+FLASH_CTL_REJECT = {"type": "flash_control_result", "action": "start", "ok": False, "error": "busy"}
+
+
+def flash_ctl_state(kind, now_ms=None):
+    """flash-ctl-<kind> 的 config.flash_sale：契约样例 running.json 改几个闪购助手会报的代码（版本、running、
+    paused_reason、page、商品的 position / skip），经 StatusTracker 规整；控制进度照 app/pipeline_flash.py
+    _flash_compose 叠上去，attention 用 flash_sale.attention 重算。不手写界面上的任何一句"""
+    doc = json.loads(FLASH_FIXTURE.read_text(encoding="utf-8"))
+    doc["app_version"] = FLASH_CTL_OLD_VERSION if kind == "old" else FLASH_CTL_VERSION
+    # 样例里那条 ❌ 记录是「没看过的问题记录」：它会让浮层主句变成「有 n 条新的问题」（打开浮层那一刻的还算新的），
+    # 这几份要看的是那一排和主句本身，去掉它（带中文的那条数据记录留着，照样查数据区）
+    doc["alerts"] = [a for a in doc["alerts"] if a["level"] != "error" and not a["text"].lstrip().startswith("❌")]
+    control = None
+    if kind in ("idle", "armed", "rejected", "old"):
+        doc.update(running=False, paused_reason="not_started")
+    elif kind == "paused":
+        doc["paused_reason"] = "user_interaction"
+    elif kind == "awaiting":
+        doc["paused_reason"] = "awaiting_approval"
+    elif kind == "starting":
+        # 开始被接受以后闪购助手先刷新页面：这时 page=error、updated_at 停下（15 秒后陈旧）、还没开始运行
+        doc.update(running=False, paused_reason=None, page="error")
+        control = {"action": "start", "phase": "waiting"}
+    elif kind == "skip":
+        for product in doc["products"]:
+            position, skip, state = FLASH_CTL_SKIP[product["product_id"][-2:]]
+            product.update(position=position, skip=skip)
+            if state:
+                product["state"] = state
+    state = _flash_tracked(doc, now_ms, stale=kind == "starting")
+    if control is not None:
+        state = dict(state, control=control)
+        state["attention"] = flash_sale.attention(state)
+    return state
+
+
+def flash_ctl_scenario(base, kind, state):
+    """同一个直播中场景（英文 live-float、中文满编 live-float-zh），hello 里换上 flash-ctl-<kind> 的 config.flash_sale，
+    只点开闪购浮层（armed 再点一下「开始」），窗口是默认的 1000px，另量浮层和顶部那一排。rejected 在回放之后多一条
+    flash_control_result。名字：flash-ctl-<kind>，中文页加 -zh"""
+    out = copy.deepcopy(base)
+    out["name"] = "flash-ctl-" + kind + ("-zh" if base["lang"] == "zh" else "")
+    out["messages"][0]["config"]["flash_sale"] = copy.deepcopy(state)
+    if kind == "rejected":
+        out["messages"].append(dict(FLASH_CTL_REJECT))
+    out["clicks"] = ["#flash-btn"] + (["#flash-start"] if kind == "armed" else [])
+    out["size"] = list(FLASH_CTL_SIZE)
+    out["measure"] = list(DESKTOP_MEASURE + FLASH_CTL_MEASURE)
+    return out
 
 
 def with_flash_button(scenario, name, state):
@@ -865,6 +952,12 @@ def build(tmp):
     for base in ZH_QUIET_BASES:
         for width in ZH_FLOAT_WIDTHS:
             sc = resized(out[base], width)
+            out[sc["name"]] = sc
+    # 闪购浮层顶部那一排：英文页和中文满编的直播顶栏各一份（中文满编的品牌标签最长，顶栏最挤）
+    for kind in FLASH_CTL_KINDS:
+        state = flash_ctl_state(kind)
+        for base in ("live-float", "live-float-zh"):
+            sc = flash_ctl_scenario(out[base], kind, state)
             out[sc["name"]] = sc
     for name, (base, target, pick) in HINTS.items():
         out[name] = with_target_hint(out[base], name, target, pick)

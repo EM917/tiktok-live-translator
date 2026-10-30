@@ -1331,8 +1331,9 @@
           if (msg.config.engine) renderEngine(msg.config.engine);
           if (msg.config.viewer) renderShare(msg.config.viewer);
           applyFloatConfig(msg.config.float_window);
-          // 闪购按钮：同 float_window，没有这个键 = 没装闪购助手，按钮藏起来
-          applyFlashConfig(msg.config.flash_sale);
+          // 闪购按钮：同 float_window，没有这个键 = 没装闪购助手，按钮藏起来。重连后的这一份为准：本页记着的
+          // 在途、武装都作废
+          applyFlashConfig(msg.config.flash_sale, true);
           // 持续提示以服务端为准：重连时整份重放，先清掉本地的
           incidents = Object.create(null);
           if (msg.config.incidents) {
@@ -1547,6 +1548,10 @@
       case "flash_sale":
         applyFlashConfig(msg);
         break;
+      // 开始、停止、继续的结果（只有代码，句子在 flash.js）：写进闪购浮层里那一句
+      case "flash_control_result":
+        applyFlashResult(msg);
+        break;
     }
   }
 
@@ -1595,8 +1600,9 @@
     // 换主播按钮和停止按钮同一处切换：只在直播中/连接中有意义，待机/已结束/
     // 出错/离线时没有「正在监听的主播」可换
     if (switchBtn) switchBtn.classList.toggle("hidden", !active);
-    // 和本地服务断开期间「打开闪购助手」点了也发不出去：先禁用，重连后的 hello 再带回真实状态
+    // 和本地服务断开期间「打开闪购助手」和开始、停止、继续点了也发不出去：先禁用，重连后的 hello 再带回真实状态
     if (flashOpenBtn) flashOpenBtn.disabled = state === "offline";
+    paintFlashControls();
     startBtn.disabled = state === "connecting";
     syncAsrFetchBtn();      // 自检「语音识别」一行的「现在下载」：连接中、直播中置灰
     streamActive = active;
@@ -4209,10 +4215,11 @@
     }
   });
 
-  // ---- 闪购（web/flash.js）：顶栏按钮 + 只读浮层 ----
+  // ---- 闪购（web/flash.js）：顶栏按钮 + 浮层 ----
   // 后端只在 macOS 上装了闪购助手时往 config 里放 flash_sale（照 float_window：没有这个键 = 这个服务端不提供），
   // 状态变了再推一条 type:"flash_sale"，形状相同。文案、排序、渲染都在 flash.js，这里只接线：存状态、算未读、
-  // 画按钮和浮层、开合、每秒改倒计时、点「打开闪购助手」。首页和直播中都显示（用户 10-27 定），不跟 streamActive 走。
+  // 画按钮和浮层、开合、每秒改倒计时、点「打开闪购助手」，以及浮层顶部那一排「开始」「停止」「继续」（闪购助手 0.8.0 起，
+  // 发 flash_control；结果是 flash_control_result，只有代码）。首页和直播中都显示（用户 10-27 定），不跟 streamActive 走。
   // 提醒只走这颗按钮的颜色和浮层，不借报警、状态胶囊、顶部提示条（CLAUDE.md 第六条）
   var flashBtn = document.getElementById("flash-btn");
   var flashPanel = document.getElementById("flash-panel");
@@ -4220,6 +4227,23 @@
   var flashOpenBtn = document.getElementById("flash-open");
   var flashNote = document.getElementById("flash-note");
   var flashMore = document.getElementById("flash-more");
+  var flashCtl = document.getElementById("flash-ctl");
+  var flashCtlEls = {
+    start: document.getElementById("flash-start"),
+    stop: document.getElementById("flash-stop"),
+    resume: document.getElementById("flash-resume"),
+    note: document.getElementById("flash-ctl-note"),
+    desc: document.getElementById("flash-desc"),
+  };
+  // 本页刚点出去、后端还没回话的动作（start / stop / resume）：在途时那一排马上禁用，不等后端把 control.phase=sending
+  // 发回来。后端把它记成在途（状态里 control.phase=sending）、或者回了 flash_control_result（广播给所有控制页）、
+  // 或者重连的 hello 到了，就放掉：后端在途时收到的第二个指令直接丢、不回话，这里不能一直等它
+  var flashPending = null;
+  var flashArmedAt = null;        // 「开始」点了第一下的时刻（Date.now()）；null = 没武装
+  var flashArmTimer = null;
+  // #flash-note 里那句是哪个动作的结果（start / stop / resume）。之后某一份状态显示它已经生效（flashControlDone），
+  // 那句就过时了，收掉——浮层开着、关着都一样。断线、open 没打开那几句不跟着状态收：这里是 null
+  var flashNoteAction = null;
   var flashEls = {
     state: document.getElementById("flash-state"),
     headline: document.getElementById("flash-headline"),
@@ -4264,11 +4288,54 @@
       flashCountdowns = renderFlashPanel(document, flashEls, flashState,
                                          { now: Date.now(), expanded: flashExpanded, unread: shown });
     }
+    paintFlashControls();
   }
 
-  // hello 里整份换（没有这个键：按钮藏起来、浮层关掉），type:"flash_sale" 消息同形
-  function applyFlashConfig(cfg) {
+  // 浮层顶部那一排（flash.js flashControlView 定显示什么）。setStatus 断线、重连时也调：那时这一段可能还没跑到，
+  // flashCtlEls 还是 undefined，什么都不做
+  function paintFlashControls() {
+    if (!flashCtlEls || !flashCtlEls.start) return;
+    var had = document.activeElement;
+    var ui = { armed: flashArmedAt != null, pending: flashPending, offline: statusState === "offline" };
+    var view = flashControlView(flashState, ui);
+    if (ui.armed && (!view.start.shown || view.start.disabled)) {
+      // 「开始」不在了或不能点了（开始运行了、页面没准备好、断线、别的控制页点了别的）：武装作废，下次从第一下算
+      flashDisarm();
+      ui.armed = false;
+      view = flashControlView(flashState, ui);
+    }
+    renderFlashControls(document, flashCtlEls, view);
+    // 按下的那颗变成不能点（正在发送…）或藏起来（开始运行了，换成停止）时，焦点挪到这一排本身（#flash-ctl 带
+    // tabindex="-1"），不滚动：键盘和读屏的人不会掉出浮层、掉回页面开头（同「还有 N 个」挪到商品列表的做法）。
+    // 只看重画前焦点在哪：真浏览器里按钮一禁用，焦点就可能已经回到 body
+    var ctlBtns = [flashCtlEls.start, flashCtlEls.stop, flashCtlEls.resume];
+    if (flashCtl && ctlBtns.indexOf(had) >= 0 && (had.disabled || had.classList.contains("hidden")) &&
+        isPopoverOpen(flashPanel)) {
+      flashCtl.focus({ preventScroll: true });
+    }
+  }
+
+  // hello 里整份换（没有这个键：按钮藏起来、浮层关掉），type:"flash_sale" 消息同形。fromHello：重连后的第一份，
+  // 本页记着的在途、武装都作废（后端的 control 才是真的）
+  function applyFlashConfig(cfg, fromHello) {
     flashState = cfg && typeof cfg === "object" ? cfg : null;
+    var ctl = flashState && flashState.control;
+    // 后端已经把指令记成在途：按钮由状态里的 control 说了算，本页记的那一下放掉
+    if (fromHello || (ctl && typeof ctl === "object" && ctl.phase === "sending")) flashPending = null;
+    if (fromHello) flashDisarm();
+    // 浮层里那句控制结果说的事已经生效了（例如 30 秒后才来的 not_seen，之后开始运行了）：收掉，开着关着都一样
+    if (flashNoteAction && flashControlDone(flashNoteAction, flashState)) clearFlashNote();
+    paintFlash();
+  }
+
+  // flash_control_result：{action, ok, error}，广播给所有控制页（不只是点的那一页）。接受了不写（状态自己会说，
+  // 「正在开始…」那些字在按钮上），把上一句收掉；没接受、没发出、30 秒没看到生效，写一句（flash.js flashResultLine）
+  function applyFlashResult(msg) {
+    if (!msg || typeof msg !== "object") return;
+    flashPending = null;
+    var line = flashResultLine(msg);
+    if (line) showFlashNote(line, FLASH_ACTIONS.indexOf(msg.action) >= 0 ? msg.action : null);
+    else if (msg.ok === true) clearFlashNote();
     paintFlash();
   }
 
@@ -4279,15 +4346,37 @@
     lsSet(FLASH_SEEN_KEY, JSON.stringify(next));
   }
 
-  function showFlashNote(text) {
+  // line：纯文字，或 flashResultLine 的 {text, code}（认不出的代码放进 translate="no"）。action：这句是哪个动作的结果
+  function showFlashNote(line, action) {
     if (!flashNote) return;
-    flashNote.textContent = text;
+    renderFlashNote(document, flashNote, line);
     flashNote.classList.remove("hidden");
+    flashNoteAction = action || null;
   }
   function clearFlashNote() {
+    flashNoteAction = null;
     if (!flashNote) return;
     flashNote.textContent = "";
     flashNote.classList.add("hidden");
+  }
+  function showFlashOffline() {
+    showFlashNote(L("与本地服务断开，正在重连——稍候再试。",
+                    "Lost connection to the local service. Reconnecting… Try again in a moment."));
+  }
+
+  function flashDisarm() {
+    if (flashArmTimer) clearTimeout(flashArmTimer);
+    flashArmTimer = null;
+    flashArmedAt = null;
+  }
+  // 发一个指令。没发出去（断线）就不装作点成了，写那一句；发出去了把上一句收掉，那一排马上禁用（flashPending）
+  function sendFlashControl(action) {
+    if (!send({ type: "flash_control", action: action })) {
+      showFlashOffline();
+      return;
+    }
+    flashPending = action;
+    clearFlashNote();
   }
 
   // 不挪焦点（同手机同看）：浮层紧跟着按钮，键盘用户按 Tab 就进去了。
@@ -4306,6 +4395,7 @@
     hidePopover(flashPanel, flashBtn);
     if (!wasOpen) return;
     clearFlashNote();
+    flashDisarm();                // 关上浮层：「开始」的武装作废，下次打开从第一下算
     flashExpanded = false;
     flashSeenAtOpen = undefined;
     paintFlash();
@@ -4332,13 +4422,37 @@
     flashOpenBtn.addEventListener("click", function () {
       // 没发出去（断线）就不装作点成了，同换主播面板的那一句；成没成由后端的状态和 notice（where=flash）说
       if (!send({ type: "open_flash_helper" })) {
-        showFlashNote(L("与本地服务断开，正在重连——稍候再试。",
-                        "Lost connection to the local service. Reconnecting… Try again in a moment."));
+        showFlashOffline();
         return;
       }
       clearFlashNote();
     });
   }
+  // 「开始」点两下（用户 10-27 定）：第一下变「再点一次开始」，6 秒内再点才发，到点复原；武装后 400 毫秒内的第二下不算
+  // ——鼠标双击一次就发出开始的话，专用 Chrome 里的页面会被刷新（flash.js flashStartClick）。只改这一颗：
+  // 清空字幕那套（confirmTwice）不动
+  if (flashCtlEls.start) {
+    flashCtlEls.start.addEventListener("click", function () {
+      var now = Date.now();
+      var step = flashStartClick(flashArmedAt, now);
+      if (step === "ignore") return;
+      flashDisarm();
+      if (step === "arm") {
+        flashArmedAt = now;
+        flashArmTimer = setTimeout(function () {
+          flashArmTimer = null;
+          flashArmedAt = null;
+          paintFlashControls();
+        }, FLASH_START_CONFIRM_MS);
+      } else {
+        sendFlashControl("start");
+      }
+      paintFlashControls();
+    });
+  }
+  // 停止、继续点一下就发（停是安全的方向；继续是确认框里点了取消以后接着跑）
+  if (flashCtlEls.stop) flashCtlEls.stop.addEventListener("click", function () { sendFlashControl("stop"); paintFlashControls(); });
+  if (flashCtlEls.resume) flashCtlEls.resume.addEventListener("click", function () { sendFlashControl("resume"); paintFlashControls(); });
   registerPopover(flashPanel, flashBtn, closeFlashPanel);
 
   // 倒计时：浮层开着才每秒改字；页面不可见时跳过，同 paintLiveLag

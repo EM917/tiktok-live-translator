@@ -1,4 +1,4 @@
-"""闪购助手的只读状态（app/flash_sale.py）：纯函数和计时器。不开网络、不碰真的 /Applications 和 9334。
+"""闪购助手的状态和控制的规则（app/flash_sale.py）：纯函数和计时器。不开网络、不碰真的 /Applications 和 9334。
 
 夹具是闪购助手那边给的三份契约样例（tests/fixtures/flash_sale/，标题都是虚构的「(Fictional)」，
 店铺是 example_shop），原样拷进来。
@@ -20,6 +20,10 @@ REAL_APP_CANDIDATES = fs.app_candidates
 
 def sample(name):
     return json.loads((FIXTURES / (name + ".json")).read_text(encoding="utf-8"))
+
+
+# 后端和前端各有一份、必须一字不差的规则：同一张表，这里测后端，node 测试测 web/flash.js
+SHARED = sample("shared-rules")
 
 
 def iso_s(text):
@@ -133,7 +137,8 @@ def test_the_running_sample_normalizes_to_the_documented_shape():
     first = out["products"][0]
     assert first == {"id": "1000000000000000001", "title": "Glow Serum Trio (Fictional)", "state": "live",
                      "round": 2, "ends_ms": int(round(iso_s("2026-10-27T21:51:01.000+0000") * 1000)),
-                     "next_ms": None, "stock_left": 30, "stock_total": 30, "renewals": 0, "enabled": True}
+                     "next_ms": None, "stock_left": 30, "stock_total": 30, "renewals": 0, "enabled": True,
+                     "position": None, "skip": None}      # 样例是 0.7.2 的：没有这两个键，当 null
     between = out["products"][1]
     assert between["state"] == "between_rounds" and between["ends_ms"] is None
     assert between["next_ms"] == int(round(iso_s("2026-10-27T21:37:10.000+0000") * 1000))
@@ -300,6 +305,23 @@ def test_attention_truth_table(over, expected):
     assert fs.attention(ok_state(**over)) == expected
 
 
+@pytest.mark.parametrize("case", SHARED["attention"], ids=lambda c: c["why"])
+def test_the_start_quiet_window_matches_the_shared_table(case):
+    """开始、继续被接受后等生效的那 30 秒：页面加载中、出错、不在商品列表、超过 15 秒没更新都不算要人处理
+    （用户 10-27 定：显示「正在开始…」，不变橙、不出红字）。后端 starting / attention 和前端 flashStarting、
+    浮层主句的变色吃同一张表。"""
+    assert fs.starting(case["state"]) is case["starting"]
+    assert fs.attention(case["state"]) == case["attention"]
+
+
+@pytest.mark.parametrize("control", [None, "waiting", [], {"action": "start"}, {"phase": "waiting"},
+                                     {"action": "START", "phase": "waiting"}, {"action": "start", "phase": "done"}])
+def test_starting_needs_exactly_an_accepted_start_or_resume(control):
+    assert fs.starting({"control": control}) is False
+    assert fs.starting(None) is False and fs.starting([]) is False
+    assert fs.starting({"control": {"action": "start", "phase": "waiting"}}) is True
+
+
 @pytest.mark.parametrize("conn, expected", [("checking", []), ("unreachable", []),
                                             ("bad_response", ["bad_response"])])
 def test_attention_when_not_connected(conn, expected):
@@ -311,7 +333,7 @@ def test_empty_state_has_the_message_shape_and_no_data():
         state = fs.empty_state(conn)
         assert state == {"conn": conn, "why": None, "stale": False, "updated_ms": None, "app_version": None,
                          "page": None, "running": None, "paused_reason": None, "products": [],
-                         "products_total": 0, "alerts": [], "stuck_count": 0,
+                         "products_total": 0, "alerts": [], "stuck_count": 0, "control": None,
                          "attention": ["bad_response"] if conn == "bad_response" else []}
     assert fs.empty_state("checking") is not fs.empty_state("checking")
     # why 只在 bad_response 时下发（页面按它挑一句话）
@@ -341,10 +363,11 @@ def track(tracker, raw, mono=1000.0, fresh=True):
 def test_the_published_state_has_exactly_the_message_keys():
     state = track(fs.StatusTracker(), sample("running"))
     assert set(state) == {"conn", "why", "stale", "updated_ms", "app_version", "page", "running", "paused_reason",
-                          "products", "products_total", "alerts", "attention", "stuck_count"}
+                          "products", "products_total", "alerts", "attention", "stuck_count", "control"}
     assert set(state["products"][0]) == {"id", "title", "state", "round", "ends_ms", "next_ms", "stock_left",
-                                         "stock_total", "renewals", "enabled", "stuck"}
+                                         "stock_total", "renewals", "enabled", "position", "skip", "stuck"}
     assert state["conn"] == "ok" and state["why"] is None and state["stale"] is False and state["updated_ms"] is None
+    assert state["control"] is None           # 控制指令的进度由 app/pipeline_flash.py 发布前叠上
     assert set(state) == set(fs.empty_state("ok"))
 
 
@@ -438,7 +461,8 @@ def test_a_stopped_product_is_stuck_only_after_sixty_seconds():
     {"paused_reason": "awaiting_approval"},
     {"products": [{"product_id": "1000000000000000003", "state": "stopped", "enabled": False}]},
     {"products": [{"product_id": "1000000000000000003", "state": "pending", "enabled": True}]},
-    {"products": []},
+    # 列表空了本身不清零（见下面「暂时不在列表里」那几条）；全局条件断了才连不在列表里的一起清
+    {"running": False, "products": []},
 ])
 def test_any_broken_condition_resets_the_stuck_clock(breaker):
     tracker = fs.StatusTracker()
@@ -497,6 +521,82 @@ def test_a_failure_with_nothing_connected_before_is_published_at_once():
     assert tracker.update("bad_response", "no_answer", 15.0) == fs.empty_state("bad_response", "no_answer")
 
 
+# ---- 卡住计时：商品暂时不在列表里（decisions-step2 追加第 1 条） --------------------------------------
+# 闪购助手 0.8.0 起每翻完一轮刷新一次 Buy now，列表先变短再补回（102 个先变 30 个）。排在后面的商品每轮都会
+# 暂时不在 /status 里；以前这一跳就把它的计时清零，真卡住的永远攒不满 60 秒、按钮永远不变色
+
+def absent_doc(**over):
+    """stopped_doc 去掉停着的那个（…003），只剩进行中的 …001。"""
+    doc = stopped_doc(**over)
+    doc["products"] = [p for p in doc["products"] if p["product_id"] != "1000000000000000003"]
+    return doc
+
+
+def test_a_product_missing_from_a_poll_keeps_its_stuck_clock():
+    tracker = fs.StatusTracker()
+    track(tracker, stopped_doc(), mono=0.0)
+    gone = track(tracker, absent_doc(), mono=30.0)
+    assert [p["id"] for p in gone["products"]] == ["1000000000000000001"] and gone["attention"] == []
+    track(tracker, absent_doc(), mono=33.0)
+    assert stuck_of(track(tracker, stopped_doc(), mono=59.9))["3"] is False
+    back = track(tracker, stopped_doc(), mono=60.0)          # 从 0 秒那次接着计，不是从 59.9 秒重新计
+    assert stuck_of(back)["3"] is True and back["attention"] == ["stuck"] and back["stuck_count"] == 1
+
+
+@pytest.mark.parametrize("breaker", [{"running": False}, {"paused_reason": "awaiting_approval"},
+                                     {"paused_reason": "user_interaction"}])
+def test_a_broken_global_condition_also_resets_products_that_are_not_listed(breaker):
+    tracker = fs.StatusTracker()
+    track(tracker, stopped_doc(), mono=0.0)
+    track(tracker, absent_doc(), mono=20.0)
+    track(tracker, absent_doc(**breaker), mono=30.0)         # 它不在列表里，计时照样清掉
+    track(tracker, absent_doc(), mono=40.0)
+    assert stuck_of(track(tracker, stopped_doc(), mono=61.0))["3"] is False
+    assert stuck_of(track(tracker, stopped_doc(), mono=120.9))["3"] is False     # 从 61 秒重新计
+    assert stuck_of(track(tracker, stopped_doc(), mono=121.0))["3"] is True
+
+
+def test_a_product_unseen_for_ten_minutes_is_dropped_from_the_table():
+    tracker = fs.StatusTracker()
+    track(tracker, stopped_doc(), mono=0.0)
+    track(tracker, absent_doc(), mono=float(fs.STUCK_FORGET_SEC))       # 正好 10 分钟：还留着
+    assert set(tracker._stopped_since) == {"1000000000000000003"}
+    track(tracker, absent_doc(), mono=fs.STUCK_FORGET_SEC + 0.1)
+    assert tracker._stopped_since == {}
+
+
+@pytest.mark.parametrize("poll_between", [False, True])
+def test_a_product_back_after_ten_minutes_starts_a_new_clock(poll_between):
+    """隔了 10 分钟以上才回来：从回来那一刻重新计，不接着很久以前那次（那样一回来就算卡住）。
+    两条路都走：中间有一跳把它从表里丢了；中间一跳都没有（表里还留着它，回来那一跳才发现隔太久）。"""
+    tracker = fs.StatusTracker()
+    track(tracker, stopped_doc(), mono=0.0)
+    track(tracker, absent_doc(), mono=3.0)
+    if poll_between:
+        track(tracker, absent_doc(), mono=fs.STUCK_FORGET_SEC + 0.2)
+        assert tracker._stopped_since == {}
+    t = fs.STUCK_FORGET_SEC + 0.5
+    assert stuck_of(track(tracker, stopped_doc(), mono=t))["3"] is False
+    assert stuck_of(track(tracker, stopped_doc(), mono=t + 59.9))["3"] is False
+    assert stuck_of(track(tracker, stopped_doc(), mono=t + 60))["3"] is True
+
+
+def test_the_stuck_table_is_capped_and_drops_the_longest_unseen_first(monkeypatch):
+    monkeypatch.setattr(fs, "STUCK_TRACK_MAX", 3)
+    tracker = fs.StatusTracker()
+
+    def only(pid):
+        return stopped_doc(products=[{"product_id": pid, "state": "stopped", "enabled": True}])
+
+    for mono, pid in enumerate("abcd"):
+        track(tracker, only(pid), mono=float(mono))
+    assert set(tracker._stopped_since) == {"b", "c", "d"}              # a 最久没出现，先丢
+    assert tracker._stopped_since["d"] == [3.0, 3.0]
+    back = track(tracker, only("a"), mono=4.0)                         # a 回来：重新计，不是从 0 秒算
+    assert set(tracker._stopped_since) == {"a", "c", "d"} and tracker._stopped_since["a"] == [4.0, 4.0]
+    assert back["products"][0]["stuck"] is False
+
+
 def test_a_product_without_an_id_is_never_stuck():
     tracker = fs.StatusTracker()
     doc = stopped_doc(products=[{"state": "stopped", "enabled": True}])
@@ -520,6 +620,161 @@ def test_products_are_sorted_by_what_needs_a_person_first():
                      ("ended_by_user", False), ("brand_new", False), (None, False)]
     # 同一档保持闪购助手给的顺序
     assert [p["id"] for p in state["products"] if p["state"] == "live"] == ["1", "8"]
+
+
+# ---- 闪购助手 0.8.2 的 skip、position（decisions-step2 最后一节） ------------------------------------
+
+@pytest.mark.parametrize("value, expected", [
+    ("slot_1", "slot_1"), ("no_stock", "no_stock"), ("max_renewals", "max_renewals"),
+    ("auto_start_off", "auto_start_off"), ("no_position", "no_position"), ("next_to_pin", "next_to_pin"),
+    ("top_n", "top_n"),
+    ("brand_new<b>", "brand_newb"), ("x" * 100, "x" * fs.MAX_CODE), ("", None), ("  ", None),
+    (None, None), (7, None), (True, None), (["slot_1"], None),
+])
+def test_skip_is_a_cleaned_code_and_unknown_codes_are_kept(value, expected):
+    assert fs.normalize({"products": [{"product_id": "1", "skip": value}]})["products"][0]["skip"] == expected
+
+
+@pytest.mark.parametrize("value, expected", [
+    (12, 12), (1, 1), (12.0, 12), (0, 0), (12.5, None), ("12", None), (True, None), (None, None),
+    (float("nan"), None), (10**10, None),
+])
+def test_position_is_an_integer_or_null(value, expected):
+    got = fs.normalize({"products": [{"product_id": "1", "position": value}]})["products"][0]["position"]
+    assert got == expected and type(got) is type(expected)
+
+
+def test_an_older_helper_without_skip_or_position_reads_as_null():
+    """0.8.2 以前的闪购助手没有这两个键（契约样例就是 0.7.2 的）：都当 null，什么都不变。"""
+    for name in ("idle", "running", "awaiting"):
+        products = fs.normalize(sample(name))["products"]
+        assert products and all(p["skip"] is None and p["position"] is None for p in products)
+
+
+@pytest.mark.parametrize("case", SHARED["waiting_renewal"], ids=lambda c: c["why"])
+def test_the_stuck_condition_matches_the_shared_table(case):
+    """「等续开 / 算卡住」的条件：后端 stuck_candidate 和前端 flashWaitingRenewal 吃同一张表。"""
+    assert fs.stuck_candidate(case["product"], case["state"]) is case["expect"]
+
+
+@pytest.mark.parametrize("case", SHARED["control_done"], ids=lambda c: c["why"])
+def test_control_done_matches_the_shared_table(case):
+    """指令生效了没有：后端 control_done（等生效时收掉 control）和前端 flashControlDone（收掉浮层里那句结果）吃同一张表。"""
+    assert fs.control_done(case["action"], case["state"]) is case["expect"]
+
+
+def test_control_done_refuses_anything_that_is_not_a_state():
+    for junk in (None, [], "ok", 3):
+        assert fs.control_done("stop", junk) is False
+
+
+def test_last_ok_is_true_only_right_after_a_poll_that_was_read():
+    """发控制指令之前看的是它：连上以后第一次没查到，交回的照旧是上一份 ok 状态，但 last_ok 已经是 False。"""
+    tracker = fs.StatusTracker()
+    assert tracker.last_ok() is False                               # 还没查过
+    track(tracker, sample("idle"), mono=0.0)
+    assert tracker.last_ok() is True
+    kept = tracker.update("bad_response", "no_answer", 3.0)
+    assert kept["conn"] == "ok" and tracker.last_ok() is False
+    track(tracker, sample("idle"), mono=6.0)
+    assert tracker.last_ok() is True
+    tracker.update("ok", [1], 9.0)                                  # 回的不是对象
+    assert tracker.last_ok() is False
+    tracker.update("unreachable", None, 12.0)
+    assert tracker.last_ok() is False
+
+
+def with_fields(name, **fields):
+    doc = sample(name)
+    doc.update(fields)
+    return doc
+
+
+@pytest.mark.parametrize("raw, why", [
+    ({"status": "ok"}, "schema"),                     # 9334 上碰巧回了个 JSON 对象的别的服务
+    ({}, "schema"),
+    ({"schema": 1}, "page"),
+    ({"schema": 1, "page": "ok", "running": False}, None),       # 存心冒充的照样挡不住：只认得出字段像不像
+    (with_fields("idle", schema=2), "schema"),
+    (with_fields("idle", schema="1"), "schema"),
+    (with_fields("idle", schema=None), "schema"),
+    (with_fields("idle", page="maintenance"), "page"),
+    (with_fields("idle", page=None), "page"),
+    (with_fields("idle", page="OK"), "page"),
+])
+def test_control_needs_a_status_that_looks_like_the_helpers(raw, why):
+    """发控制指令（带着密钥）之前看的 control_refusal：除了刚刚连上并读懂了（not_ok 那一半见上一条），还要 schema 是 1、
+    page 是契约里的七个代码之一。normalize 收任何 JSON 对象，{} 也算「连上了」：没有这两条，9334 上碰巧回 JSON 的
+    别的服务就拿得到密钥。存心照着契约回的进程挡不住（docs/flash-sale.md §9.4）。"""
+    tracker = fs.StatusTracker()
+    assert tracker.control_refusal() == "not_ok"                    # 还没查过
+    track(tracker, sample("idle"), mono=0.0)
+    assert tracker.control_refusal() is None
+    assert track(tracker, raw, mono=3.0)["conn"] == "ok"            # 页面上照样当连上了画
+    assert tracker.control_refusal() == why
+    tracker.update("bad_response", "no_answer", 6.0)                # 连上以后第一次没查到：交回的照旧是 ok，但不发
+    assert tracker.control_refusal() == "not_ok"
+
+
+def test_every_page_code_of_the_contract_lets_control_through():
+    """契约的七个 page 代码都算像闪购助手的回话（开始、继续能不能按由页面按 page 定，停止在哪种页面上都要能发）；
+    前端 flashPageText 认的也正好是这七个。"""
+    assert fs.PAGE_CODES == ("ok", "no_page", "login_required", "loading", "no_list", "captcha", "error")
+    for i, page in enumerate(fs.PAGE_CODES):
+        tracker = fs.StatusTracker()
+        track(tracker, with_fields("running", page=page), mono=float(i))
+        assert tracker.control_refusal() is None, page
+    js = (Path(__file__).resolve().parent.parent / "web" / "flash.js").read_text(encoding="utf-8")
+    body = re.search(r"function flashPageText\(code\) \{(.*?)\n\}", js, re.S).group(1)
+    assert tuple(re.findall(r'case "(\w+)":', body)) == fs.PAGE_CODES
+
+
+@pytest.mark.parametrize("case", SHARED["sort"], ids=lambda c: c["why"])
+def test_the_sort_order_matches_the_shared_table(case):
+    """商品的先后：后端 product_sort_key 和前端 flashSortProducts 吃同一张表。"""
+    products = copy.deepcopy(case["products"])
+    assert [p["id"] for p in sorted(products, key=fs.product_sort_key)] == case["ids"]
+
+
+@pytest.mark.parametrize("skip", ["slot_1", "top_n", "next_to_pin", "no_stock", "brand_new_reason"])
+def test_a_product_the_helper_skips_on_purpose_is_never_stuck(skip):
+    """skip 不为 null：闪购助手说了故意不续开（1 号位、没库存……）。停多久都不算卡住，按钮不变色。"""
+    tracker = fs.StatusTracker()
+    doc = stopped_doc()
+    doc["products"][0]["skip"] = skip
+    track(tracker, doc, mono=0.0)
+    state = track(tracker, doc, mono=600.0)
+    assert stuck_of(state)["3"] is False and state["attention"] == [] and state["stuck_count"] == 0
+    assert state["products"][-1]["skip"] == skip
+    assert tracker._stopped_since == {}
+
+
+def test_a_skip_that_appears_clears_the_stuck_clock_and_one_that_goes_away_starts_it_again():
+    tracker = fs.StatusTracker()
+    track(tracker, stopped_doc(), mono=0.0)
+    track(tracker, stopped_doc(), mono=50.0)
+    skipped = stopped_doc()
+    skipped["products"][0]["skip"] = "no_stock"
+    track(tracker, skipped, mono=55.0)
+    assert stuck_of(track(tracker, stopped_doc(), mono=70.0))["3"] is False      # 从 70 秒重新计
+    assert stuck_of(track(tracker, stopped_doc(), mono=129.9))["3"] is False
+    assert stuck_of(track(tracker, stopped_doc(), mono=130.0))["3"] is True
+
+
+def test_the_tracker_sorts_by_card_position_within_a_tier():
+    """同一档（这里都是进行中）按卡片序号从小到大，没有序号的排最后、保持原来的顺序。卡住的照样在最前。"""
+    tracker = fs.StatusTracker()
+    doc = stopped_doc(products=[
+        {"product_id": "1000000000000000011", "state": "live", "enabled": True, "position": 7},
+        {"product_id": "1000000000000000012", "state": "live", "enabled": True},
+        {"product_id": "1000000000000000013", "state": "live", "enabled": True, "position": 2},
+        {"product_id": "1000000000000000014", "state": "live", "enabled": True, "position": None},
+        {"product_id": "1000000000000000015", "state": "stopped", "enabled": True, "position": 30},
+    ])
+    track(tracker, doc, mono=0.0)
+    state = track(tracker, doc, mono=60.0)
+    assert [p["id"][-2:] for p in state["products"]] == ["15", "13", "11", "12", "14"]
+    assert [p["position"] for p in state["products"]] == [30, 2, 7, None, None]
 
 
 def test_the_running_sample_puts_the_stopped_product_first_once_it_is_stuck():
@@ -555,7 +810,9 @@ def test_the_panel_ranks_orders_and_quotes_numbers_like_the_backend():
     - flashRank 的排序表和 flash_sale._RANK（卡住的 0 档、认不出的最后一档）；
     - FLASH_ATTN_ORDER（浮层主句的先后）和 attention() 排出来的顺序；
     - 文案里写死的数：连不上「每 15 秒再查一次」= POLL_DOWN_SEC，「停了超过 1 分钟」= STUCK_SEC，
-      没有回应「在 2 秒内」= HTTP_TIMEOUT_SEC。"""
+      没有回应「在 2 秒内」= HTTP_TIMEOUT_SEC，「30 秒内没看到」= CONTROL_WAIT_SEC；
+    - 控制那几张表：FLASH_ACTIONS = CONTROL_ACTIONS，FLASH_OWN_ERRORS = CONTROL_OWN_ERRORS（页面按它分「本程序这边的」和
+      「闪购助手没有接受」），FLASH_QUIET_PAGES = START_QUIET_PAGES（开始后的过渡里不算要人处理的页面状态）。"""
     js = (Path(__file__).resolve().parent.parent / "web" / "flash.js").read_text(encoding="utf-8")
     body = re.search(r"function flashRank\(p\) \{(.*?)\n\}", js, re.S).group(1)
     assert {code: int(n) for code, n in re.findall(r'case "(\w+)": return (\d+);', body)} == fs._RANK
@@ -568,6 +825,12 @@ def test_the_panel_ranks_orders_and_quotes_numbers_like_the_backend():
     assert fs.POLL_DOWN_SEC == 15 and "每 15 秒再查一次" in js and "Checking again every 15 sec." in js
     assert fs.HTTP_TIMEOUT_SEC == 2 and "在 2 秒内没有回应" in js and "didn’t answer within 2 sec." in js
     assert fs.STUCK_SEC == 60 and "停了超过 1 分钟" in js and "Stopped for over 1 min" in js
+    assert fs.CONTROL_WAIT_SEC == 30 and js.count("30 秒内没看到闪购助手") == 3 and js.count("within 30 sec.") == 3
+    assert "在 2 秒内没有回应。看看状态" in js and "didn’t answer within 2 sec. Check" in js
+    for name, want in (("FLASH_ACTIONS", fs.CONTROL_ACTIONS), ("FLASH_OWN_ERRORS", fs.CONTROL_OWN_ERRORS),
+                       ("FLASH_QUIET_PAGES", fs.START_QUIET_PAGES)):
+        got = json.loads(re.search(r"var {} = (\[[^\]]*\]);".format(name), js).group(1))
+        assert got == list(want), name
 
 
 def test_the_samples_raise_the_documented_attention():
