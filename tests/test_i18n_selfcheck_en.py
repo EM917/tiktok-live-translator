@@ -267,11 +267,15 @@ def _browser_login(mp, tmp_path):
     from app import browser_login as bl
     mp.setattr(bl, "LOGIN_STEPS", "Sign in to TikTok in Chrome, then try again.")
     mp.setattr(bl, "observed_text", lambda observed: OBSERVED)
-    mp.setattr(bl, "steps_text", lambda observed: "Sign in to TikTok in Chrome.")
+    mp.setattr(bl, "steps_text", lambda observed, **_kw: "Sign in to TikTok in Chrome.")
     rows = [selfcheck._browser_login_row({}),
             selfcheck._browser_login_row({"Chrome": bl.NOT_READ}),
             selfcheck._browser_login_row({"Chrome": bl.OK, "Safari": bl.BLOCKED}),
-            selfcheck._browser_login_row({"Chrome": bl.BLOCKED})]
+            selfcheck._browser_login_row({"Chrome": bl.BLOCKED}),
+            # 登录优先那一步要读的 Safari 被系统拒绝读取、Chrome 读到了登录（login-5）：detail 多一句那一步只读谁
+            selfcheck._browser_login_row({"chrome": bl.OK, "safari": bl.BLOCKED}),
+            # macOS 上带「完全磁盘访问权限」那几步时多一个 fda（那几步旁边的按钮跟在哪几行后面），也得是英文
+            selfcheck._browser_login_row({"Chrome": bl.BLOCKED}, buttons=True)]
     with mp.context() as other_os:
         coro = selfcheck.check_browser_login()
         other_os.setattr(sys, "platform", "linux")
@@ -373,7 +377,21 @@ def test_every_selfcheck_row_reads_as_english(scenario, monkeypatch, tmp_path):
             assert not CJK.search(en[key]), (scenario, key, en[key])
             assert not UNFILLED.search(en[key]), (scenario, key, en[key])
             assert "  " not in en[key].strip(), (scenario, key, en[key])    # 拼接处没有多空格
-        assert set(en) == {"name", "level", "detail", "fix"} and en["level"] == row["level"]
+        # 两种行多带键，别的行、别的情况都只有这四个键：
+        # - recheck：「浏览器登录态」那一行带「完全磁盘访问权限」那几步时多出来的布尔键（页面画「我加好了，再查一次」），
+        #   不是文字，英文界面上不用换。fda：同一行在 macOS 上多出来的 {按钮: 那一行}，只跟着 recheck 出现，
+        #   那几行是文字，也得是英文
+        # - action / size_mb / busy：「语音识别」一行模型还没下全时多带「现在下载」那一下（app/selfcheck.py _check）
+        extra = set(en) - {"name", "level", "detail", "fix"}
+        assert extra in (set(), {"recheck"}, {"recheck", "fda"}, {"action", "size_mb", "busy"}) \
+            and en["level"] == row["level"]
+        if "recheck" in extra:
+            assert en["recheck"] is True and scenario == "browser_login"
+        elif extra:
+            assert en["action"] == selfcheck.ACTION_DOWNLOAD_ASR and en["name"] == "Speech Recognition"
+            assert en["level"] == selfcheck.WARN
+        for line in (en.get("fda") or {}).values():
+            assert isinstance(line, str) and line and not CJK.search(line), (scenario, line)
 
 
 def test_the_twelve_row_names_follow_the_glossary():
@@ -413,7 +431,7 @@ def test_manual_install_command_follows_the_note_in_english_order(monkeypatch, t
     assert row["fix"] == NOTE + "。也可以停播后" + cmd + "，装好后重开程序"
     assert i18n.text(row["detail"], i18n.EN) == (
         "This Mac supports GPU acceleration, but recognition is running on the CPU: ct2 + "
-        "large-v3-turbo (model downloads when you first click Start). That’s more than twice as "
+        "large-v3-turbo (model not downloaded yet, about 1.6 GB). That’s more than twice as "
         "slow, and long sessions tend to build a backlog.")
 
 
@@ -442,11 +460,13 @@ SWITCH_ZH = ("从 python.org 下载安装 Python 3.10 或更新版本；装好�
 SWITCH_EN = ("Install Python 3.10 or later from python.org. Then quit the app completely, delete the "
              ".venv folder in the app folder, and open the app again. It reinstalls its components "
              "with the new Python (about 1.4 GB, needs an internet connection).")
-FDA_ZH = ("。换了 Python 之后，要把新的 Python 再加进「完全磁盘访问权限」一次，路径和步骤见「浏览器登录态」"
-          "那一行；不加的话，TikTok 要求登录才给流地址的直播间拿不到流")
-FDA_EN = (" After switching, add the new Python to Full Disk Access once more. The Browser Login row "
-          "shows the path and steps. Without it, the app can’t get the stream for live streams where "
-          "TikTok provides the stream URL only to signed-in viewers.")
+# 路径和步骤指向点「开始翻译」后窗口顶部那条提示（2026-10-29）：直播中设置分组收着，「浏览器登录态」那一行看不见
+FDA_ZH = ("。换了 Python 之后，要把新的 Python 再加进「完全磁盘访问权限」一次：点「开始翻译」后，系统拒绝读取"
+          "浏览器数据时，窗口顶部那条提示里有路径和步骤；不加的话，TikTok 要求登录才给流地址的直播间拿不到流")
+FDA_EN = (" After switching, add the new Python to Full Disk Access once more. After you click Start, if "
+          "macOS doesn’t allow the app to read browser data, the notice at the top of the window shows the "
+          "path and steps. Without it, the app can’t get the stream for live streams where TikTok provides "
+          "the stream URL only to signed-in viewers.")
 
 
 @pytest.mark.parametrize("darwin", [True, False], ids=["macos", "windows"])
@@ -486,13 +506,13 @@ def test_a_rosetta_python_gets_its_own_asr_row(monkeypatch, tmp_path):
     row = rows[0]
     assert row["level"] == selfcheck.WARN
     assert row["detail"] == ("这台 Mac 是 Apple 芯片，但程序在用 Intel 版的 Python（经 Rosetta 转译运行），"
-                             "识别只能用 CPU（ct2 + large-v3-turbo（首次开播需先下载模型））"
+                             "识别只能用 CPU（ct2 + large-v3-turbo（模型还没下载，约 1.6 GB））"
                              "——慢，长时间监听容易积压")
     english = i18n.text(row["detail"], i18n.EN)
     assert english == (
         "This Mac has Apple silicon, but the app is running on an Intel version of Python "
         "(translated by Rosetta), so recognition can only run on the CPU: ct2 + large-v3-turbo "
-        "(model downloads when you first click Start). It’s slow, and long sessions tend to build "
+        "(model not downloaded yet, about 1.6 GB). It’s slow, and long sessions tend to build "
         "a backlog.")
     assert "较小" not in row["detail"] and "smaller" not in english
     # Rosetta 只在 macOS 上：步骤带「完全磁盘访问权限」那一句

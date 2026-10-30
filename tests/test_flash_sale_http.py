@@ -154,17 +154,10 @@ async def raw_peer(respond, timeout=1.0):
         await server.wait_closed()
 
 
-def free_port():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 def test_a_port_nobody_listens_on_is_unreachable():
-    """连接被拒：9334 上没人在听。契约里这就是闪购助手没开，只有这一种算 unreachable。"""
-    port = free_port()
-    assert port != 9334
-    got = asyncio.run(fs.fetch_status("http://127.0.0.1:%d/status" % port, timeout=1.0))
+    """连接被拒：9334 上没人在听。契约里这就是闪购助手没开，只有这一种算 unreachable。没人听的端口用
+    127.0.0.1:9 哨兵，不用绑过又关掉的端口：那时谁在听已经说不准，测试总网也不放行（tests/socket_net.py）。"""
+    got = asyncio.run(fs.fetch_status("http://127.0.0.1:9/status", timeout=1.0))
     assert got == ("unreachable", None)
 
 

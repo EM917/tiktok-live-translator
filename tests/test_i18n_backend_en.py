@@ -210,6 +210,8 @@ def _rows_from_other_modules(monkeypatch, tmp_path):
     rows["login-blocked"] = selfcheck._browser_login_row({"chrome": bl.BLOCKED,
                                                           "safari": bl.NOT_LOGGED_IN})
     rows["login-ok"] = selfcheck._browser_login_row({"chrome": bl.OK})
+    # 登录优先那一步要读的 Safari 被系统拒绝读取、Chrome 读到了登录（login-5）：「提醒」，只带授权那几步
+    rows["login-first-refused"] = selfcheck._browser_login_row({"safari": bl.BLOCKED, "chrome": bl.OK})
     # 翻译引擎行 × localmodel.install_hint 的三种平台说法
     google = SimpleNamespace(name="google", inner=SimpleNamespace())
     for platform in ("darwin", "win32", "linux"):
@@ -246,11 +248,20 @@ def test_selfcheck_rows_made_of_other_modules_text_reach_the_page_in_english(
     blocked = shown["login-blocked"]
     assert blocked["detail"].startswith("Chrome: macOS didn’t allow access; Safari: readable, but "
                                         "no TikTok sign-in cookie"), blocked
-    assert blocked["fix"].startswith("macOS didn’t allow the app to read browser data. Go to "
-                                     "System Settings > Privacy & Security > Full Disk Access")
+    assert blocked["fix"].startswith("macOS didn’t allow the app to read browser data. Follow these three "
+                                     "steps to turn on Full Disk Access for Python:\n1. Open System Settings > "
+                                     "Privacy & Security > Full Disk Access.")
     assert "“{}”".format(FDA_PATH) in blocked["fix"]
     assert blocked["fix"].endswith(" Sign in to TikTok in Chrome (or Safari), then try again.")
     assert shown["login-ok"]["detail"] == "Chrome: found a TikTok sign-in"
+    refused = shown["login-first-refused"]
+    assert refused["level"] == "warn" and refused["recheck"] is True
+    assert refused["detail"] == ("Safari: macOS didn’t allow access; Chrome: found a TikTok sign-in. When looking up "
+                                 "the stream URL, the app first reads the TikTok sign-in from Safari only and skips "
+                                 "that step when it can’t read it. Only live streams where TikTok provides the stream "
+                                 "URL only to signed-in viewers need this. Other live streams aren’t affected.")
+    assert refused["fix"].startswith("macOS didn’t allow the app to read browser data. Follow these three steps")
+    assert "“{}”".format(FDA_PATH) in refused["fix"] and "Sign in to TikTok" not in refused["fix"]
     for platform in ("darwin", "win32", "linux"):
         google = shown["google-" + platform]["fix"]
         assert google.startswith("For fully local translation with no request caps: "), google
@@ -348,7 +359,9 @@ def test_the_4003110_ending_reaches_the_page_in_english_with_each_login_observat
     if borrowed:
         assert notices == []
     else:
-        assert notices and notices[-1] == i18n.render(bl.no_login_notice(login), i18n.EN)
+        # 在 macOS 上（CI 的 macos 跑器就是），那几步按「打开完全磁盘访问设置」等按钮写（pipeline._sync_login_incident）
+        assert notices and notices[-1] == i18n.render(
+            bl.no_login_notice(login, buttons=bl.fda_buttons_here()), i18n.EN)
 
 
 def test_engine_notes_name_the_engines_in_english(monkeypatch, tmp_path):

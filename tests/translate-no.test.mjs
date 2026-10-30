@@ -53,9 +53,14 @@ const staticBodies = (html) => staticTags(html, (attrs) => {
 test("index.html：静态标 translate=\"no\" 的正好是这几处名字、链接、地址", () => {
   assert.deepEqual(staticNames(web("index.html")), [
     "select#target-lang",        // 选项是各语言的自称；select 自己的 aria-label 照常要英文
+    "button#target-hint-switch", // 「字幕译成」就地提示里的按钮：字是语言自称（中文 / English），aria-label 照常成对
     "div#share-url",             // 同看链接
     "ul#share-ip-list",          // 候选局域网地址，只有地址按钮
     "code#fix-command-text",     // 带真实路径的命令
+    "button#lang-quick-zh",      // 首页的「中文 / English」两段切换：字是语言自称（2026-10-29）
+    "button#lang-quick-en",
+    "span#lang-head-en",         // 界面语言行名带上的另一种语言名：中文页的 Language、英文页的「界面语言」
+    "span#lang-head-zh",
     "option[value=zh]",          // 界面语言行的两个语言名（C5）
     "option[value=en]",
   ]);

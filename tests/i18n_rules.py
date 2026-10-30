@@ -37,10 +37,10 @@ UI_FILES = (
     "app/browser_login.py", "app/comment_redo.py", "app/comment_source.py", "app/comments.py",
     "app/detector.py",
     "app/diskspace.py", "app/ffmpeg_bin.py", "app/float_window.py", "app/hwdetect.py",
-    "app/localmodel.py",
+    "app/instance.py", "app/localmodel.py",
     "app/macbrand.py", "app/native_dialog.py", "app/pipeline.py", "app/pipeline_disk.py",
     "app/pipeline_engine.py", "app/pipeline_flash.py", "app/pipeline_float.py", "app/pipeline_guard.py",
-    "app/pipeline_stream.py", "app/pipeline_transcript.py", "app/power.py",
+    "app/pipeline_asr_fetch.py", "app/pipeline_stream.py", "app/pipeline_transcript.py", "app/power.py",
     "app/resolver.py", "app/selfcheck.py",
     "app/transcript_export.py",
     "app/translator.py", "app/update_guard.py", "app/updater.py", "app/viewer.py",
@@ -159,6 +159,10 @@ UI_NAMES = {
     "本场品牌": "Brand",
     "打开词表文件夹": "Open Brands Folder",
     "打开 brands 文件夹": "Open Brands Folder",
+    # 「完全磁盘访问权限」那几步旁边的按钮（browser_login.FDA_BUTTON_LABELS，只在 macOS 上有）
+    "打开完全磁盘访问设置": "Open Full Disk Access Settings",
+    "在访达里选中 Python": "Show Python in Finder",
+    "在访达里选中终端": "Show Terminal in Finder",
     # macOS 自己的界面：照抄苹果的英文原名
     "系统设置": "System Settings",
     "隐私与安全性": "Privacy & Security",
@@ -206,8 +210,8 @@ RULE8_FAMILY = {
     "web/viewer.js": "*",
     "web/viewer.html": "*",
     "web/index.html": ("#input-help", "#guard-bar", "#guard-drawer", "#guard-card"),
-    "app/pipeline.py": ("browser_only_message", "_resolve_media", "_confirm_offline",
-                        "_host_wait", "_run_session", "_selfcheck_incident_text"),
+    "app/pipeline.py": ("browser_only_message", "_resolve_media", "_first_layer_refused_note",
+                        "_confirm_offline", "_host_wait", "_run_session", "_selfcheck_incident_text"),
 }
 
 # 禁用词例外：中文臂 → 理由。命中这里的对不查两级禁用词。
