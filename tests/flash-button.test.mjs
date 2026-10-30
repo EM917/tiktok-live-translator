@@ -299,7 +299,7 @@ test("按钮在浮窗之后、换主播之前，浮层紧跟着它；文字是�
   assert.match(tag, /<span class="btn-label" data-en="Flash Sale">闪购<\/span>/);
   assert.match(tag, /<svg class="i" aria-hidden="true"><use href="#i-flash"\/><\/svg>/);
   assert.match(html, /<symbol id="i-flash" viewBox="0 0 16 16">/);
-  assert.match(html, /<script src="\/static\/flash\.js\?v=2"><\/script>\n {2}<script src="\/static\/app\.js/);
+  assert.match(html, /<script src="\/static\/flash\.js\?v=3"><\/script>\n {2}<script src="\/static\/app\.js/);
 });
 
 test("「Aa」紧挨着字号控件、名字同滑块（字幕字号 / Caption size），两种语言都写 Aa", () => {

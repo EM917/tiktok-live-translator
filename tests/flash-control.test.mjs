@@ -362,6 +362,64 @@ test("和本地服务断开：三颗都不能点（点了也发不出去）；�
   }
 });
 
+test("停止在后端等着再试（phase=retrying）：停止写「正在重试…」、不能点；开始、继续照常能点（点了重试作废）；旁边说一句，连不上时也说", () => {
+  const retrying = { action: "stop", phase: "retrying" };
+  const NOTE = "停止还没被接受，30 秒内每 3 秒再试一次。";
+  assert.deepEqual(F.flashActiveControl(calm({ control: retrying })), retrying);
+  let v = view(calm({ control: retrying }), {});
+  assert.deepEqual(shown(v), ["stop"]);
+  assert.deepEqual(usable(v), []);
+  assert.equal(v.stop.text, "正在重试…");
+  assert.deepEqual(v.note, { text: NOTE });
+  observed(NOTE);
+  v = view(calm({ paused_reason: "user_interaction", control: retrying }), {});
+  assert.deepEqual(usable(v), ["resume"], "继续照常能点：后端把还没发的重试作废");
+  v = view(idle({ control: retrying }), {});
+  assert.deepEqual(usable(v), ["start"]);
+  assert.equal(v.start.text, "开始");
+  v = view(calm({ paused_reason: "awaiting_approval", control: retrying }), {});
+  assert.deepEqual(v.note, { text: NOTE }, "重试那句盖过确认框那句");
+  for (const conn of ["unreachable", "bad_response", "checking"]) {
+    v = view({ conn, stale: false, products: [], alerts: [], attention: [], control: retrying }, {});
+    assert.deepEqual(shown(v), [], conn);
+    assert.deepEqual(v.note, { text: NOTE }, "连不上时一颗按钮都不出，这句照样写：" + conn);
+    assert.equal(v.any, false);
+  }
+  v = view(calm({ control: retrying }), { pending: "start" });
+  assert.equal(v.note, null, "本页刚点了开始、还在途：不写重试那句");
+  assert.equal(F.FLASH_STOP_RETRY_SEC, 30);
+  assert.equal(F.FLASH_STOP_RETRY_GAP_SEC, 3);
+});
+
+test("发布闸关着（gated）：「开始」「继续」都不出，只剩停止；版本那句只说停止；确认框里点了取消的暂停照旧叫人去面板上点继续", () => {
+  const gated = { gated: true };
+  let v = view(idle(), gated);
+  assert.deepEqual(shown(v), [], "没在运行：一颗都不出（开始在闸后面）");
+  assert.equal(v.any, false);
+  assert.equal(v.note, null);
+  assert.equal(v.gated, true);
+  v = view(idle({ page: "login_required", paused_reason: null }), gated);
+  assert.equal(v.note, null, "开始不在：页面那句不写在按钮旁边（主句照样说）");
+  v = view(calm(), gated);
+  assert.deepEqual(usable(v), ["stop"]);
+  v = view(calm({ paused_reason: "user_interaction" }), gated);
+  assert.deepEqual(shown(v), ["stop"], "继续也在闸后面");
+  v = view(calm({ paused_reason: "awaiting_approval" }), gated);
+  assert.deepEqual(v.note, { text: "确认框处理完以后才能从这里停止。" });
+  v = view(idle({ app_version: "0.7.3" }), gated);
+  assert.deepEqual(v.note, { text: "闪购助手 0.8.0 起才能从这里停止。" });
+  observed(v.note.text);
+  v = view(idle({ app_version: "0.7.3" }), {});
+  assert.deepEqual(v.note, { text: "闪购助手 0.8.0 起才能从这里开始、停止。" }, "开闸以后照旧");
+  v = view(calm({ control: { action: "stop", phase: "retrying" } }), gated);
+  assert.equal(v.stop.text, "正在重试…");
+  assert.equal(view(calm(), {}).gated, false);
+  // 主句：没有「继续」按钮，照旧叫人去闪购助手的面板上点
+  const paused = calm({ paused_reason: "user_interaction", attention: ["paused"] });
+  assert.equal(lines(paused)[0], "已暂停：确认框里点了取消。");
+  assert.equal(F.flashLines(paused, 0, gated).map(F.flashLineText)[0], "已暂停：确认框里点了取消。要在闪购助手的面板上点继续。");
+});
+
 test("「开始」点两下：第一下武装；武装后 400 毫秒内的第二下不算；400 毫秒到 6 秒之间才发；满 6 秒（或时钟往回走）重新武装", () => {
   assert.equal(F.FLASH_START_CONFIRM_MS, 6000);
   assert.equal(F.FLASH_START_GUARD_MS, 400);
@@ -375,6 +433,24 @@ test("「开始」点两下：第一下武装；武装后 400 毫秒内的第二
   assert.equal(F.flashStartClick(t, t + 6000), "arm");
   assert.equal(F.flashStartClick(t, t - 1), "arm");
   assert.equal(F.flashStartClick(t, NaN), "arm");
+});
+
+test("不用浏览器自带的确认框（直播助手平台轮廓 §4.4，R17）：它弹着时整个页面的脚本停住，字幕和报警都不刷新", () => {
+  const { readFileSync } = require("node:fs");
+  const src = readFileSync(require.resolve("../web/flash.js"), "utf8");
+  assert.ok(!/\bconfirm\s*\(/.test(src), "web/flash.js 里不许有 confirm(");
+});
+
+test("「开始」第一下的编号：16 位十六进制，每次新的；和后端 flash_sale.ARM_ID 认的字符对得上", () => {
+  const ids = new Set();
+  for (let i = 0; i < 50; i++) {
+    const id = F.flashNewArmId();
+    assert.match(id, /^[0-9a-f]{16}$/);
+    ids.add(id);
+  }
+  assert.equal(ids.size, 50);
+  assert.equal(F.flashNewArmId(() => 0), "0".repeat(16));
+  assert.equal(F.flashNewArmId(() => 0.9999999), "f".repeat(16));
 });
 
 // ---- 结果的话 ---------------------------------------------------------------------------------
@@ -392,6 +468,8 @@ test("接受了不写（状态自己会说）；本程序这边的代码说走�
     bad_reply: "发出了，但回话读不出来。看看状态有没有变。",
     no_control: "这个版本的闪购助手没有控制接口。",
     failed: "没能处理这个指令：本程序出错，详情在终端里。",
+    local_only: "没有发出：本机脚本只能让闪购助手停止，开始、继续要在本程序里点。",
+    not_confirmed: "没有发出：「开始」要点两下，第二下在第一下之后 0.4 到 6 秒之间才算。请再点两下。",
   };
   for (const [code, text] of Object.entries(want)) {
     assert.deepEqual(result(code), { text }, code);
@@ -433,6 +511,37 @@ test("闪购助手 409 的代码：「闪购助手没有接受：」加契约里
   assert.deepEqual(result("x".repeat(60)), { text: "闪购助手没有接受：", code: "x".repeat(40) }, "代码截到 40 个字符");
   assert.deepEqual(result(null), { text: "闪购助手没有接受：", code: "?" });
   assert.deepEqual(result(403), { text: "闪购助手没有接受：", code: "?" });
+});
+
+test("停止被拒在确认框、验证码上（后端不再试）：说清去专用 Chrome 里点哪儿；开始、继续照旧是契约那句", () => {
+  assert.deepEqual(result("awaiting_approval", "stop"),
+                   { text: "闪购助手没有接受停止：专用 Chrome 里弹着确认框。到那里点确定或取消，再点停止。" });
+  assert.deepEqual(result("captcha", "stop"),
+                   { text: "闪购助手没有接受停止：专用 Chrome 的页面上有验证码。到那里处理完验证码，再点停止。" });
+  for (const code of ["awaiting_approval", "captcha"]) {
+    observed(result(code, "stop").text);
+    assert.equal(F.flashStopBlockedText(code), result(code, "stop").text);
+    assert.ok(result(code, "start").text.startsWith("闪购助手没有接受："), code);
+    assert.ok(result(code, "resume").text.startsWith("闪购助手没有接受："), code);
+  }
+  assert.equal(F.flashStopBlockedText("busy"), null);
+  assert.deepEqual(result("busy", "stop"), { text: "闪购助手没有接受：正忙，稍等再试。" });
+});
+
+test("后端再试过的停止（tries 2 起）：句子前面加「试了 n 次，」；认不出的代码照样原样放在后面；tries 不对的不加", () => {
+  const tried = (error, tries) => F.flashResultLine({ type: "flash_control_result", action: "stop", ok: false, error, tries });
+  assert.deepEqual(tried("unreachable", 11), { text: "试了 11 次，没有发出：连不上 127.0.0.1:9334。" });
+  assert.deepEqual(tried("busy", 3), { text: "试了 3 次，闪购助手没有接受：正忙，稍等再试。" });
+  assert.deepEqual(tried("no_status", 11), { text: "试了 11 次，没有发出：刚才没查到闪购助手的状态。" });
+  assert.deepEqual(tried("captcha", 2),
+                   { text: "试了 2 次，闪购助手没有接受停止：专用 Chrome 的页面上有验证码。到那里处理完验证码，再点停止。" });
+  assert.deepEqual(tried("cooldown_x", 2), { text: "试了 2 次，闪购助手没有接受：", code: "cooldown_x" });
+  for (const tries of [undefined, null, 1, 0, -3, 2.5, "3", NaN, Infinity]) {
+    assert.deepEqual(tried("busy", tries), { text: "闪购助手没有接受：正忙，稍等再试。" }, String(tries));
+  }
+  assert.equal(F.flashResultLine({ type: "flash_control_result", action: "stop", ok: true, error: null, tries: 3 }), null,
+               "再试以后接受了：不写，状态自己会说");
+  observed(tried("unreachable", 11).text);
 });
 
 test("别的 HTTP 状态：写 127.0.0.1:9334 回了什么（9334 上回话的不一定是闪购助手）", () => {
@@ -504,6 +613,26 @@ function ctlEls(doc) {
   for (const k of ["start", "stop", "resume", "note"]) els[k].classList.add("hidden");
   return els;
 }
+
+test("renderFlashControls：发布闸关着时最底下那句只说停止；一颗都没有时照旧是第一步那句", () => {
+  const doc = makeFlashDoc();
+  const els = {};
+  for (const k of ["start", "stop", "resume", "note", "desc"]) els[k] = doc.createElement(k === "note" || k === "desc" ? "p" : "button");
+  F.renderFlashControls(doc, els, view(calm(), { gated: true }));
+  assert.equal(els.desc.textContent, "这里只能停止，其他操作请到闪购助手里。");
+  assert.ok(els.start.classList.contains("hidden") && els.resume.classList.contains("hidden"));
+  F.renderFlashControls(doc, els, view(idle(), { gated: true }));
+  assert.equal(els.desc.textContent, "这里只显示状态。要操作，请到闪购助手里。");
+  F.renderFlashControls(doc, els, view(idle(), {}));
+  assert.equal(els.desc.textContent, "这里只能开始、停止和继续，其他操作请到闪购助手里。");
+  // renderFlashPanel 把 gated 交给主句
+  const pels = makeEls(doc);
+  const paused = calm({ paused_reason: "user_interaction", attention: ["paused"] });
+  F.renderFlashPanel(doc, pels, paused, { now: NOW, gated: true });
+  assert.equal(pels.headline.textContent, "已暂停：确认框里点了取消。要在闪购助手的面板上点继续。");
+  F.renderFlashPanel(doc, pels, paused, { now: NOW });
+  assert.equal(pels.headline.textContent, "已暂停：确认框里点了取消。");
+});
 
 test("renderFlashControls：显隐、禁用、按钮上的字、旁边那句、最底下那句随那一排换", () => {
   const doc = makeFlashDoc();

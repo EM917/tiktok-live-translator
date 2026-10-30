@@ -1,5 +1,6 @@
 """本地 Web 服务：托管字幕 UI 页面，并通过 WebSocket 向所有客户端广播字幕。"""
 import asyncio
+import contextvars
 import hashlib
 import json
 import time
@@ -64,6 +65,13 @@ FLOAT_TYPES = frozenset({"caption", "caption_update", "session_break", "comment"
                          "comment_guard", "guard_mark", "history_cleared", "status", "config"})
 FLOAT_CONFIG_KEYS = ("caption_size", "target_lang", "status", "guard_state", "guard_marked")
 FLOAT_REPLAY_CAPTIONS = 3
+# 这一条控制消息是从哪种控制连接来的：_ws 在调 on_control 之前设好、处理完（连同它交回的协程）再复原，同一个任务里同步读。
+#   "page"   带本机同端口 Origin 的页面（应用窗口、浏览器标签）；
+#   "local"  没带 Origin 的本机进程（curl、本地脚本，包括 Claude 替人跑的）。
+# 不改 on_control 的签名：直接调 handle_control 的测试和老写法拿到缺省的 "page"（按控制页算）。现在只有闪购的
+# 开始、继续看它（app/pipeline_flash.py：本机脚本只能让闪购助手停，直播助手平台轮廓 §5.6、§9.2 第 6 条）。防的是误触
+# （自己的截图脚本、测试工具），不是安全边界：同一用户的进程想带什么 Origin 就带什么（docs/flash-sale.md §9.4）
+CONTROL_SOURCE = contextvars.ContextVar("control_source", default="page")
 FLOAT_REPLAY_COMMENTS = 10
 # history 里除了字幕还混着场次分隔（session_break），它们不算字幕、页面也不把它们算进 300 张卡片。
 # deque 多留一点余量，回放时再按「最后 HISTORY_MAX 条字幕」切（captions_tail）——换主播换得再勤，
@@ -381,6 +389,7 @@ class CaptionServer:
                     await self.clear_history(data.get("kind"))
                     continue
                 if self.on_control is not None:
+                    source = CONTROL_SOURCE.set("local" if keyless else "page")
                     try:
                         result = self.on_control(data)
                         if asyncio.iscoroutine(result):
@@ -388,6 +397,8 @@ class CaptionServer:
                     except Exception as exc:
                         # 单条控制消息出错不该断开整个连接
                         print("[警告] 处理控制消息失败: {}".format(exc))
+                    finally:
+                        CONTROL_SOURCE.reset(source)
         finally:
             self.clients.discard(ws)
             self._float_ws.discard(ws)
