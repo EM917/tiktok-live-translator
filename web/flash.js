@@ -681,6 +681,12 @@ function flashRefusedText(code) {
     case "not_running": return L("还没开始运行。", "It hasn’t started yet.");
     case "not_paused": return L("没有暂停。", "It isn’t paused.");
     case "busy": return L("正忙，稍等再试。", "It’s busy. Try again in a moment.");
+    // 0.9.3 起：停止收下了、还在排队送到页面时，开始和继续回 stop_pending；停止刚收下时页面里有人点了开始，
+    // 停止回 superseded（以后来的开始为准）。都照契约写，不猜为什么
+    case "stop_pending":
+      return L("有一个停止还在排队，等它送到页面再开始。", "A Stop is still queued. Start again once it reaches the page.");
+    case "superseded":
+      return L("停止没有执行：页面上有人在它之后点了开始。", "Stop wasn’t carried out: Start was pressed on the page after it.");
     case "no_response":
       return L("页面没有回应，这个指令不会补做。", "The page didn’t respond. This command won’t be carried out later.");
     case "error": return L("页面报告出错。", "The page reported an error.");

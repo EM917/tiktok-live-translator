@@ -257,8 +257,11 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 
   - `http_<状态码>`：403（防冒充的条件没过，例如密钥对不上）、3xx（不跟随）、5xx 等；409 但读不出代码也是 `http_409`；
   - 其余都是闪购助手 409 给的代码，原样（同 `/status` 的代码字段清洗）。契约里有 no_page、login_required、loading、
-    captcha、awaiting_approval、already_running、paused、not_running、not_paused、busy、no_response、error；
-    认不出的原样交给页面显示，不猜原因。
+    captcha、awaiting_approval、already_running、paused、not_running、not_paused、busy、no_response、error，
+    0.9.3 起还有 stop_pending（有一个停止已经收下、还在排队送到页面，只有开始和继续会收到）和 superseded
+    （停止刚收下时页面里有人点了开始，以开始为准，只有停止会收到，极少）；认不出的原样交给页面显示，不猜原因。
+  - 0.9.3 起停止在页面刷新、脚本没装好时也收下，回 `200 {"ok":true,"accepted":"stop","queued":true}`；
+    `queued` 不认识也照成功处理，之后照常等 `/status` 的 running 变成 false。请求体写错回 400（`http_400`）。
 - 状态里的 `control`（§4）是指令的进度：`{action, phase: "sending"}` 在途，`{action, phase: "waiting"}` 已接受、等生效。
   页面靠它禁用按钮、写「正在开始…」，重连的页面从 hello 里也拿得到；不带时刻，等多久由后端判。
 
