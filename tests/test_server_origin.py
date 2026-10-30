@@ -14,7 +14,11 @@ def classify(origin, port=8765):
 
 
 def test_no_origin_is_control():
-    # 非浏览器客户端（curl、本地脚本、应用窗口）没有 Origin 头
+    # 非浏览器客户端（curl、本地脚本）没有 Origin 头。应用窗口和浏览器标签打开的是 http://127.0.0.1:端口，
+    # 一定带本机同端口的 Origin，按控制页算（test_own_page_is_control）。没带 Origin 的仍是控制面，
+    # 只有一处例外：闪购的开始、继续这类会让工具对观众做事的指令，本机脚本发不了（回 local_only，
+    # 停止照发；app/server.py CONTROL_SOURCE，
+    # tests/test_pipeline_flash.py::test_the_server_tells_a_page_from_a_local_script）
     assert classify(None) == "control"
 
 

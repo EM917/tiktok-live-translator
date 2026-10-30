@@ -981,6 +981,7 @@ FLASH_CTL_EXPECT = {
     "starting": (("start", "open"), ("open",)),
     "skip": (("stop", "open"), ("stop", "open")),
     "rejected": (("start", "open"), ("start", "open")),
+    "gated": (("stop", "open"), ("stop", "open")),
 }
 # 各种类在页面上必须看得到的字（中文、英文），按元素 id 找；None 的元素要藏着。flash.js 的文案，docs/i18n-style.md §3 K
 FLASH_CTL_TEXT = {
@@ -1000,6 +1001,9 @@ FLASH_CTL_TEXT = {
                  "flash-headline": ("正在开始…（闪购助手在刷新页面）", "Starting… (Flash Sale Helper is reloading the page)")},
     "skip": {"flash-headline": None},
     "rejected": {"flash-note": ("闪购助手没有接受：正忙，稍等再试。", "Flash Sale Helper declined: It’s busy. Try again in a moment.")},
+    # 发布闸关着（出厂的样子）：只有停止，最底下那句只说停止
+    "gated": {"flash-stop": ("停止", "Stop"), "flash-ctl-note": None,
+              "flash-desc": ("这里只能停止，其他操作请到闪购助手里。", "Only Stop works here. Do everything else in Flash Sale Helper.")},
 }
 FLASH_SKIP_TEXT = (("1 号位，不续开", "Slot 1, not renewed"), ("下一个要置顶，不续开", "Next to pin, not renewed"),
                    ("没有库存，不续开", "Out of stock, not renewed"),
@@ -1427,7 +1431,8 @@ def test_the_flash_control_scenarios_differ_from_live_float_only_where_they_say(
     """不开 Chrome：flash-ctl-* 和它的底本（英文 live-float、中文满编 live-float-zh）只差 hello 里的 config.flash_sale、
     点击（只点开闪购浮层，armed 再点一下「开始」）、窗口（默认 1000px）、要量的元素，rejected 另在最后多一条
     flash_control_result。config.flash_sale 是 StatusTracker 规整的、attention 是 flash_sale.attention 算的；各种类的
-    状态确实是它说的样子；每个种类在 FLASH_CTL_EXPECT / FLASH_CTL_TEXT 里都有预期；英文的几份都进了 G10 的扫描。"""
+    状态确实是它说的样子；每个种类在 FLASH_CTL_EXPECT / FLASH_CTL_TEXT 里都有预期；英文的几份都进了 G10 的扫描。
+    gated 以外 hello 里都带开闸的 flash_start_enabled: true，gated 没有（出厂的样子）。"""
     from app import flash_sale
 
     built = S.build(tmp_path)
@@ -1449,6 +1454,8 @@ def test_the_flash_control_scenarios_differ_from_live_float_only_where_they_say(
             assert state == states[kind], "{}：两种语言的状态不一样".format(kind)
             stripped = json.loads(json.dumps(sc))
             del stripped["messages"][0]["config"]["flash_sale"]
+            gate = stripped["messages"][0]["config"].pop("flash_start_enabled", None)
+            assert gate is (None if kind == "gated" else True), kind
             if kind == "rejected":
                 assert stripped["messages"].pop() == S.FLASH_CTL_REJECT
             for key in ("name", "clicks", "size", "measure"):
@@ -1459,6 +1466,8 @@ def test_the_flash_control_scenarios_differ_from_live_float_only_where_they_say(
     for kind in ("idle", "armed", "rejected", "old"):
         assert (states[kind]["running"], states[kind]["paused_reason"]) == (False, "not_started"), kind
     assert states["running"]["running"] is True and states["running"]["paused_reason"] is None
+    for key in ("running", "paused_reason", "page", "control", "attention", "app_version", "stale"):
+        assert states["gated"][key] == states["running"][key], "gated 和 running 只差发布闸：" + key
     assert states["paused"]["paused_reason"] == "user_interaction"
     assert states["awaiting"]["paused_reason"] == "awaiting_approval"
     starting = states["starting"]

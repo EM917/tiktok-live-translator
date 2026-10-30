@@ -3,7 +3,8 @@
 // web/app.js（tests/desktop-page.mjs），中文、英文两种界面各跑一遍，钉住：
 //   1. 按状态显示哪几颗；版本认得出且低于 0.8.0、连不上时只剩「打开」，最底下那句换回第一步那句（审查第 7、15 条）；
 //   2. 「开始」点两下：第一下写「再点一次开始」，武装后 400 毫秒内的第二下不算（审查第 6 条），6 秒复原，关浮层作废；
-//      停止、继续点一下就发；发的消息只有 {type:"flash_control", action}；
+//      两下都发给后端（第一下 step=arm、第二下 step=fire，同一个编号，直播助手平台轮廓 §4.4）；第一下断线没发出去就不武装；
+//      停止、继续点一下就发；停止、继续发的消息只有 {type:"flash_control", action}；
 //   3. 在途：点出去马上禁用、写「正在发送…」；后端把它记成在途、回了结果、重连的 hello 到了才放开（后端在途时收到的第二个
 //      指令直接丢、不回话，页面不能一直等它）；断线时不装作发出去了；
 //   4. 结果写进浮层里那一句；过时的结果（例如浮层关着时到的 not_seen）在状态显示生效以后自己收掉（审查第 3 条）；
@@ -23,6 +24,8 @@ const hidden = (page, id) => page.el(id).classList.contains("hidden");
 const visible = (page) => ["flash-start", "flash-stop", "flash-resume", "flash-open"].filter((id) => !hidden(page, id));
 const usable = (page) => visible(page).filter((id) => !page.el(id).disabled);
 const sent = (page) => page.sent.filter((m) => m.type === "flash_control");
+const fired = (page) => sent(page).filter((m) => m.step !== "arm");
+const ARM_ID = /^[0-9a-f]{16}$/;
 const push = (page, state) => page.push(Object.assign({ type: "flash_sale" }, state));
 const result = (page, action, error) => page.push({ type: "flash_control_result", action, ok: error == null, error: error || null });
 const text = (page, id) => page.el(id).textContent;
@@ -35,9 +38,11 @@ for (const lang of ["zh", "en"]) {
   const STATUS_ONLY = T("这里只显示状态。要操作，请到闪购助手里。", "This panel only shows status. Make changes in Flash Sale Helper.");
   const start = (page) => page.el("flash-start");
 
-  function opened(state) {
+  // 开始、继续在发布闸后面（后端 flash_sale.START_ENABLED，出厂关着）：这里测的是开闸以后的接线，hello 显式带上开闸；
+  // 闸关着的样子在「发布闸」那一条
+  function opened(state, cfg = { flash_start_enabled: true }) {
     const page = loadDesktop({ lang });
-    hello(page, { flash_sale: state });
+    hello(page, Object.assign({ flash_sale: state }, cfg));
     page.el("flash-btn").click();
     assert.ok(!hidden(page, "flash-panel"));
     return page;
@@ -59,6 +64,28 @@ for (const lang of ["zh", "en"]) {
     assert.deepEqual(visible(page), ["flash-open"], "连不上：只剩「打开」");
     assert.equal(text(page, "flash-desc"), STATUS_ONLY, "一颗都没有：换回第一步那句");
     assert.ok(hidden(page, "flash-ctl-note"));
+  });
+
+  test(name("发布闸：hello 的 flash_start_enabled 不是 true 就当关着，「开始」「继续」不出、最底下那句只说停止；重连的 hello 为准"), () => {
+    const ONLY_STOP = T("这里只能停止，其他操作请到闪购助手里。", "Only Stop works here. Do everything else in Flash Sale Helper.");
+    for (const gate of [undefined, false, "true", 1, null]) {
+      const page = opened(idle(), gate === undefined ? {} : { flash_start_enabled: gate });
+      assert.deepEqual(visible(page), ["flash-open"], String(gate));
+      assert.equal(text(page, "flash-desc"), STATUS_ONLY);
+      push(page, calm({ paused_reason: "user_interaction" }));
+      assert.deepEqual(visible(page), ["flash-stop", "flash-open"], "继续也在闸后面：" + String(gate));
+      assert.deepEqual(usable(page), ["flash-stop", "flash-open"]);
+      assert.equal(text(page, "flash-desc"), ONLY_STOP);
+      assert.equal(text(page, "flash-headline"), T("已暂停：确认框里点了取消。要在闪购助手的面板上点继续。",
+        "Paused: a confirmation was canceled. Resume it from the Flash Sale Helper panel."), "没有「继续」按钮：照旧指到面板上");
+      page.el("flash-stop").click();
+      assert.deepEqual(sent(page), [{ type: "flash_control", action: "stop" }], "停止不受闸管");
+    }
+    const page = opened(idle(), {});
+    hello(page, { flash_sale: idle(), flash_start_enabled: true });
+    assert.deepEqual(visible(page), ["flash-start", "flash-open"], "开闸的 hello 到了：照开闸画");
+    hello(page, { flash_sale: idle() });
+    assert.deepEqual(visible(page), ["flash-open"], "下一次 hello 没带：又当关着");
   });
 
   test(name("版本认得出且低于 0.8.0：只剩「打开」，旁边写「0.8.0 起才能……」，最底下那句不和它打架；认不出的照常出"), () => {
@@ -89,22 +116,52 @@ for (const lang of ["zh", "en"]) {
     assert.equal(text(page, "flash-ctl-note"), T("确认框处理完以后才能从这里停止。", "Stop works here once the confirmation is handled."));
   });
 
-  test(name("「开始」点两下：第一下写「再点一次开始」不发；武装后 400 毫秒内的第二下不算；400 毫秒到 6 秒之间再点才发"), () => {
+  test(name("「开始」点两下：第一下写「再点一次开始」、只发 arm；武装后 400 毫秒内的第二下不算；400 毫秒到 6 秒之间再点才发 fire"), () => {
     const page = opened(idle());
     start(page).click();
     assert.equal(text(page, "flash-start"), T("再点一次开始", "Click Again to Start"));
-    assert.deepEqual(sent(page), []);
+    const [arm] = sent(page);
+    assert.deepEqual(Object.keys(arm).sort(), ["action", "id", "step", "type"]);
+    assert.deepEqual([arm.type, arm.action, arm.step], ["flash_control", "start", "arm"]);
+    assert.match(arm.id, ARM_ID, "第一下带一个新编号");
+    assert.deepEqual(fired(page), [], "第一下不是开始：后端只记下来");
     page.advance(150);
     start(page).click();                                          // 双击的第二下
-    assert.deepEqual(sent(page), [], "武装后 400 毫秒内的第二下不算");
+    assert.equal(sent(page).length, 1, "武装后 400 毫秒内的第二下不算，什么都不发");
     assert.equal(text(page, "flash-start"), T("再点一次开始", "Click Again to Start"), "还武装着");
     page.advance(250);                                            // 武装后正好 400 毫秒
     start(page).click();
-    assert.deepEqual(sent(page), [{ type: "flash_control", action: "start" }], "只发 action，别的键一个不带");
+    assert.deepEqual(fired(page), [{ type: "flash_control", action: "start", step: "fire", id: arm.id }],
+                     "第二下带着第一下的编号，别的键一个不带");
     assert.equal(text(page, "flash-start"), T("正在发送…", "Sending…"));
     assert.equal(start(page).disabled, true);
     start(page).click();
-    assert.equal(sent(page).length, 1, "在途：点不了");
+    assert.equal(sent(page).length, 2, "在途：点不了");
+    // 再来一轮：编号是新的
+    result(page, "start", "not_confirmed");
+    assert.equal(text(page, "flash-note"), T("没有发出：「开始」要点两下，第二下在第一下之后 0.4 到 6 秒之间才算。请再点两下。",
+      "Not sent: Start needs two clicks, the second 0.4 to 6 sec after the first. Click twice again."));
+    start(page).click();
+    assert.ok(hidden(page, "flash-note"), "又点了第一下：上一句收掉");
+    const again = sent(page)[2];
+    assert.equal(again.step, "arm");
+    assert.match(again.id, ARM_ID);
+    assert.notEqual(again.id, arm.id);
+  });
+
+  test(name("「开始」的第一下没发出去（断线）：不武装，写断线那一句；连回来以后从第一下算"), () => {
+    const page = opened(idle());
+    page.disconnect();
+    start(page).click();
+    assert.deepEqual(sent(page), []);
+    assert.equal(text(page, "flash-start"), T("开始", "Start"), "没武装");
+    assert.equal(text(page, "flash-note"), T("与本地服务断开，正在重连——稍候再试。",
+      "Lost connection to the local service. Reconnecting… Try again in a moment."));
+    page.connect();
+    page.advance(1000);
+    start(page).click();
+    assert.equal(sent(page).length, 1);
+    assert.equal(sent(page)[0].step, "arm", "连回来以后这一下是第一下");
   });
 
   test(name("「开始」武装 6 秒不点就复原（定时器到点、或者定时器没跑也按时刻算）；关上浮层作废；清空字幕那套不受影响"), () => {
@@ -115,14 +172,15 @@ for (const lang of ["zh", "en"]) {
     start(page).click();
     page.advance(6000);                                           // 定时器被节流、没跑：照时刻算，这一下重新武装
     start(page).click();
-    assert.deepEqual(sent(page), []);
+    assert.deepEqual(fired(page), []);
+    assert.deepEqual(sent(page).map((m) => m.step), ["arm", "arm", "arm"], "每一次重新武装都是新的第一下");
     assert.equal(text(page, "flash-start"), T("再点一次开始", "Click Again to Start"));
     page.el("flash-btn").click();                                 // 关上
     assert.equal(text(page, "flash-start"), T("开始", "Start"), "关上浮层：武装作废");
     page.el("flash-btn").click();
     page.advance(1000);
     start(page).click();
-    assert.deepEqual(sent(page), [], "重新打开以后又是第一下");
+    assert.deepEqual(fired(page), [], "重新打开以后又是第一下");
     // 清空字幕（confirmTwice）照旧：武装后马上再点就清，不受 400 毫秒的限制
     const clear = page.el("clear-btn");
     clear.click();
@@ -164,6 +222,33 @@ for (const lang of ["zh", "en"]) {
     assert.deepEqual(usable(page), ["flash-open"]);
     hello(page, { flash_sale: calm() });                          // 断线重连
     assert.deepEqual(usable(page), ["flash-stop", "flash-open"]);
+  });
+
+  test(name("停止在后端等着再试：本页记着的在途放掉，停止写「正在重试…」、旁边说一句（连不上时也说）；最后的结果前面带「试了 n 次」"), () => {
+    const NOTE = T("停止还没被接受，30 秒内每 3 秒再试一次。", "Stop hasn’t been accepted yet. Trying again every 3 sec for up to 30 sec.");
+    const page = opened(calm());
+    page.el("flash-stop").click();
+    assert.deepEqual(usable(page), ["flash-open"]);
+    push(page, calm({ control: { action: "stop", phase: "retrying" } }));
+    assert.equal(text(page, "flash-stop"), T("正在重试…", "Retrying…"));
+    assert.deepEqual(usable(page), ["flash-open"], "后端已经在试：停止不能点");
+    assert.ok(!hidden(page, "flash-ctl-note"));
+    assert.equal(text(page, "flash-ctl-note"), NOTE);
+    push(page, { conn: "unreachable", stale: false, products: [], alerts: [], attention: [],
+                 control: { action: "stop", phase: "retrying" } });
+    assert.deepEqual(visible(page), ["flash-open"]);
+    assert.equal(text(page, "flash-ctl-note"), NOTE, "一颗按钮都不出时那句照样在");
+    push(page, { conn: "unreachable", stale: false, products: [], alerts: [], attention: [], control: null });
+    page.push({ type: "flash_control_result", action: "stop", ok: false, error: "unreachable", tries: 11 });
+    assert.ok(hidden(page, "flash-ctl-note"));
+    assert.equal(text(page, "flash-note"), T("试了 11 次，没有发出：连不上 127.0.0.1:9334。",
+                                            "Tried 11 times. Not sent: Couldn’t connect to 127.0.0.1:9334."));
+    // 状态里的「停止在等着再试」放开本页记着的在途（之后由状态说了算），不用等结果
+    const again = opened(calm());
+    again.el("flash-stop").click();
+    push(again, calm({ control: { action: "stop", phase: "retrying" } }));
+    push(again, calm());
+    assert.deepEqual(usable(again), ["flash-stop", "flash-open"]);
   });
 
   test(name("重连的 hello：「开始」的武装作废"), () => {
@@ -310,7 +395,7 @@ test("顶部一排紧跟着标题行：开始、停止、继续、打开闪购�
   }
   assert.match(panel, /<p id="flash-note" class="flash-note hidden" aria-live="polite"><\/p>/);
   assert.match(panel, /<p id="flash-desc" class="share-desc" data-en="This panel only shows status\. Make changes in Flash Sale Helper\.">这里只显示状态。要操作，请到闪购助手里。<\/p>/);
-  assert.match(html, /<script src="\/static\/flash\.js\?v=2"><\/script>\n {2}<script src="\/static\/app\.js\?v=100"><\/script>/);
+  assert.match(html, /<script src="\/static\/flash\.js\?v=3"><\/script>\n {2}<script src="\/static\/app\.js\?v=101"><\/script>/);
 });
 
 test("样式：那一排放不下就折行（不横向撑出浮层），焦点环只给键盘；卡片序号不跟标题一起缩", () => {

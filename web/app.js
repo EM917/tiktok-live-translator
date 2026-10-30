@@ -1333,6 +1333,7 @@
           applyFloatConfig(msg.config.float_window);
           // 闪购按钮：同 float_window，没有这个键 = 没装闪购助手，按钮藏起来。重连后的这一份为准：本页记着的
           // 在途、武装都作废
+          applyFlashGate(msg.config.flash_start_enabled);
           applyFlashConfig(msg.config.flash_sale, true);
           // 持续提示以服务端为准：重连时整份重放，先清掉本地的
           incidents = Object.create(null);
@@ -4240,6 +4241,10 @@
   // 或者重连的 hello 到了，就放掉：后端在途时收到的第二个指令直接丢、不回话，这里不能一直等它
   var flashPending = null;
   var flashArmedAt = null;        // 「开始」点了第一下的时刻（Date.now()）；null = 没武装
+  var flashArmId = null;          // 第一下发给后端的编号（step=arm），第二下（step=fire）带着它；没武装时是 null
+  // 发布闸（后端 flash_sale.START_ENABLED，hello 的 config.flash_start_enabled）：不是 true 就当关着，「开始」「继续」不画。
+  // 只有停止（安全的方向）不受它管
+  var flashStartGated = true;
   var flashArmTimer = null;
   // #flash-note 里那句是哪个动作的结果（start / stop / resume）。之后某一份状态显示它已经生效（flashControlDone），
   // 那句就过时了，收掉——浮层开着、关着都一样。断线、open 没打开那几句不跟着状态收：这里是 null
@@ -4286,7 +4291,7 @@
     if (flashPanel) {
       var shown = flashSeenAtOpen !== undefined ? flashUnread(flashState.alerts, flashSeenAtOpen) : unread;
       flashCountdowns = renderFlashPanel(document, flashEls, flashState,
-                                         { now: Date.now(), expanded: flashExpanded, unread: shown });
+                                         { now: Date.now(), expanded: flashExpanded, unread: shown, gated: flashStartGated });
     }
     paintFlashControls();
   }
@@ -4296,7 +4301,7 @@
   function paintFlashControls() {
     if (!flashCtlEls || !flashCtlEls.start) return;
     var had = document.activeElement;
-    var ui = { armed: flashArmedAt != null, pending: flashPending, offline: statusState === "offline" };
+    var ui = { armed: flashArmedAt != null, pending: flashPending, offline: statusState === "offline", gated: flashStartGated };
     var view = flashControlView(flashState, ui);
     if (ui.armed && (!view.start.shown || view.start.disabled)) {
       // 「开始」不在了或不能点了（开始运行了、页面没准备好、断线、别的控制页点了别的）：武装作废，下次从第一下算
@@ -4315,13 +4320,19 @@
     }
   }
 
+  // hello 的 config.flash_start_enabled：只有 true 才算开闸（没有这个键、别的值都当关着）。hello 里紧接着就是
+  // applyFlashConfig，由它重画
+  function applyFlashGate(enabled) {
+    flashStartGated = enabled !== true;
+  }
+
   // hello 里整份换（没有这个键：按钮藏起来、浮层关掉），type:"flash_sale" 消息同形。fromHello：重连后的第一份，
   // 本页记着的在途、武装都作废（后端的 control 才是真的）
   function applyFlashConfig(cfg, fromHello) {
     flashState = cfg && typeof cfg === "object" ? cfg : null;
     var ctl = flashState && flashState.control;
-    // 后端已经把指令记成在途：按钮由状态里的 control 说了算，本页记的那一下放掉
-    if (fromHello || (ctl && typeof ctl === "object" && ctl.phase === "sending")) flashPending = null;
+    // 后端已经把指令记成在途（或停止在等着再试）：按钮由状态里的 control 说了算，本页记的那一下放掉
+    if (fromHello || (ctl && typeof ctl === "object" && (ctl.phase === "sending" || ctl.phase === "retrying"))) flashPending = null;
     if (fromHello) flashDisarm();
     // 浮层里那句控制结果说的事已经生效了（例如 30 秒后才来的 not_seen，之后开始运行了）：收掉，开着关着都一样
     if (flashNoteAction && flashControlDone(flashNoteAction, flashState)) clearFlashNote();
@@ -4368,10 +4379,17 @@
     if (flashArmTimer) clearTimeout(flashArmTimer);
     flashArmTimer = null;
     flashArmedAt = null;
+    flashArmId = null;
   }
-  // 发一个指令。没发出去（断线）就不装作点成了，写那一句；发出去了把上一句收掉，那一排马上禁用（flashPending）
-  function sendFlashControl(action) {
-    if (!send({ type: "flash_control", action: action })) {
+  // 发一个指令。没发出去（断线）就不装作点成了，写那一句；发出去了把上一句收掉，那一排马上禁用（flashPending）。
+  // 开始的第二下另带 step=fire 和第一下的编号（后端的两步确认，docs/flash-sale.md §9.6）
+  function sendFlashControl(action, armId) {
+    var msg = { type: "flash_control", action: action };
+    if (armId != null) {
+      msg.step = "fire";
+      msg.id = armId;
+    }
+    if (!send(msg)) {
       showFlashOffline();
       return;
     }
@@ -4430,22 +4448,35 @@
   }
   // 「开始」点两下（用户 10-27 定）：第一下变「再点一次开始」，6 秒内再点才发，到点复原；武装后 400 毫秒内的第二下不算
   // ——鼠标双击一次就发出开始的话，专用 Chrome 里的页面会被刷新（flash.js flashStartClick）。只改这一颗：
-  // 清空字幕那套（confirmTwice）不动
+  // 清空字幕那套（confirmTwice）不动。
+  // 两下都发给后端（直播助手平台轮廓 §4.4，用户 10-29 同意）：第一下发 {step: "arm", id: 新编号}，第二下发
+  // {step: "fire", id: 同一个编号}，后端照同样的 400 毫秒、6 秒再判一次，对不上就不转发（回 not_confirmed）。
+  // 第一下没发出去（断线）：不武装，写断线那一句——不然第二下发出去的 fire 后端没见过 arm，只会回 not_confirmed
   if (flashCtlEls.start) {
     flashCtlEls.start.addEventListener("click", function () {
       var now = Date.now();
       var step = flashStartClick(flashArmedAt, now);
       if (step === "ignore") return;
+      var armId = flashArmId;
       flashDisarm();
       if (step === "arm") {
+        var id = flashNewArmId();
+        if (!send({ type: "flash_control", action: "start", step: "arm", id: id })) {
+          showFlashOffline();
+          paintFlashControls();
+          return;
+        }
+        clearFlashNote();
         flashArmedAt = now;
+        flashArmId = id;
         flashArmTimer = setTimeout(function () {
           flashArmTimer = null;
           flashArmedAt = null;
+          flashArmId = null;
           paintFlashControls();
         }, FLASH_START_CONFIRM_MS);
       } else {
-        sendFlashControl("start");
+        sendFlashControl("start", armId);
       }
       paintFlashControls();
     });

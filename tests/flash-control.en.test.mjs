@@ -82,6 +82,8 @@ test("本程序这边的代码：Not sent / Sent, but… / no control interface 
     bad_reply: "Sent, but the reply couldn’t be read. Check whether the status changes.",
     no_control: "This version of Flash Sale Helper has no control interface.",
     failed: "Couldn’t handle the command: this app hit an error. Details are in the terminal.",
+    local_only: "Not sent: A local script can only stop Flash Sale Helper. Start and Resume have to be clicked in this app.",
+    not_confirmed: "Not sent: Start needs two clicks, the second 0.4 to 6 sec after the first. Click twice again.",
   };
   for (const [code, text] of Object.entries(want)) assert.equal(english(result(code).text), text, code);
   assert.equal(result("no_token").text.includes("token"), false, "术语表：control key，不写 token");
@@ -115,6 +117,34 @@ test("闪购助手 409 的代码：Flash Sale Helper declined: 加契约里的�
   }
   assert.deepEqual(result("cooldown_x"), { text: "Flash Sale Helper declined: ", code: "cooldown_x" });
   assert.equal(english(result("http_403").text), "Not accepted: 127.0.0.1:9334 replied with HTTP 403.");
+});
+
+test("停止再试：Retrying… 和旁边那句；拒在确认框、验证码上说去哪儿点；再试过的句子前面加 Tried n times.", () => {
+  const retrying = { action: "stop", phase: "retrying" };
+  const v = F.flashControlView(calm({ control: retrying }), {});
+  assert.equal(v.stop.text, "Retrying…");
+  assert.equal(english(v.note.text), "Stop hasn’t been accepted yet. Trying again every 3 sec for up to 30 sec.");
+  assert.equal(english(F.flashControlView({ conn: "unreachable", control: retrying }, {}).note.text), v.note.text);
+  assert.equal(english(result("awaiting_approval", "stop").text),
+               "Flash Sale Helper declined Stop: A confirmation is open in the dedicated Chrome. Confirm or cancel it there, then click Stop again.");
+  assert.equal(english(result("captcha", "stop").text),
+               "Flash Sale Helper declined Stop: There’s a CAPTCHA on the page in the dedicated Chrome. Solve it there, then click Stop again.");
+  const tried = (error, tries) => F.flashResultLine({ type: "flash_control_result", action: "stop", ok: false, error, tries });
+  assert.equal(english(tried("unreachable", 11).text), "Tried 11 times. Not sent: Couldn’t connect to 127.0.0.1:9334.");
+  assert.equal(english(tried("busy", 2).text), "Tried 2 times. Flash Sale Helper declined: It’s busy. Try again in a moment.");
+});
+
+test("发布闸关着：最底下那句 Only Stop works here.、版本那句只说 Stop；主句照旧叫人去面板上点 Resume", () => {
+  const doc = makeFlashDoc();
+  const els = {};
+  for (const k of ["start", "stop", "resume", "note", "desc"]) els[k] = doc.createElement("p");
+  F.renderFlashControls(doc, els, F.flashControlView(calm(), { gated: true }));
+  assert.equal(english(els.desc.textContent), "Only Stop works here. Do everything else in Flash Sale Helper.");
+  assert.equal(english(F.flashControlView(idle({ app_version: "0.7.3" }), { gated: true }).note.text),
+               "Stop needs Flash Sale Helper 0.8.0 or later.");
+  const paused = calm({ paused_reason: "user_interaction", attention: ["paused"] });
+  assert.equal(english(F.flashLines(paused, 0, { gated: true })[0].text),
+               "Paused: a confirmation was canceled. Resume it from the Flash Sale Helper panel.");
 });
 
 test("开始后的过渡：Starting… (Flash Sale Helper is reloading the page)；继续是 Resuming…；和后端同一张表", () => {

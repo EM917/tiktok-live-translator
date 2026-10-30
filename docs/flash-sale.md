@@ -104,7 +104,7 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 | `alerts[]` | `{at_ms, level, text}`，最后 20 条，最早的在前 |
 | `attention` | 要人处理的原因代码，已按浮层主句的优先级排好，见 §7。空表 = 不变色 |
 | `stuck_count` | 卡住的商品数 |
-| `control` | 控制指令的进度（§9）：null，或 `{action, phase}`。`action` 是 start / stop / resume；`phase` 是 `sending`（在途，按钮禁用）或 `waiting`（闪购助手已接受，等它生效；开始、继续生效以后还要等页面稳下来，§9.3；最多 30 秒）。不带时刻：等多久由后端判，页面不自己计时 |
+| `control` | 控制指令的进度（§9）：null，或 `{action, phase}`。`action` 是 start / stop / resume；`phase` 是 `sending`（在途，按钮禁用）、`waiting`（闪购助手已接受，等它生效；开始、继续生效以后还要等页面稳下来，§9.3；最多 30 秒），或 `retrying`（只有停止：没被接受，隔 3 秒再试，§9.2）。不带时刻：等多久由后端判，页面不自己计时 |
 
 `title` 和 `alerts[].text` 是**数据**：页面一律 `textContent`，绝不 `innerHTML`；商品标题标 `translate="no"`，
 记录正文带 class `i18n-data`（留给浏览器翻译，界面本身不翻）。终端日志不打印它们。
@@ -234,19 +234,32 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 §9.1–§9.5 写后端（`app/flash_sale.py` 的控制部分、`app/pipeline_flash.py` 的 `_flash_control*`），§9.6 写页面
 （`web/index.html` 的 `#flash-ctl`、`web/flash.js` 的 `flashControlView` 等、`web/app.js` 的接线）。
 
+**发布闸**（`flash_sale.START_ENABLED`，出厂 `False`；先例 `i18n.I18N_ENABLED`）：开始、继续会让闪购助手对观众做事，
+等直播助手平台轮廓第 3 步（动作记录、指令来源、两步确认）都合进来再打开（轮廓 §9.2 第 8 条，用户 10-29 同意）。这样这一步
+合进 main 以后，main 随时还能发 hotfix（hotfix 只能从 main 打），不会把「会动手、没记录」的开始、继续一起带出去。
+- 关着时：后端收到开始、继续什么都不做（终端一行「没有发出（开始、继续还没开放）」，不读密钥、不回结果），也不让停止的重试
+  作废；页面不画「开始」「继续」（§9.6）。**停止不受闸管**（停是安全的方向）。
+- 页面怎么知道：装了闪购助手时，hello 的 config 里和 `flash_sale` 一起带 `flash_start_enabled`（布尔）。只有 `true` 算开闸，
+  没有这个键、别的值都当关着。浮窗不收（不在 `FLOAT_CONFIG_KEYS` 里），手机收不到 config。
+- 开闸：把 `START_ENABLED` 改成 `True`，同时改 `tests/test_pipeline_flash.py::test_the_start_gate_ships_closed`。回退就是改回去。
+  测闸某一边的语义要显式 monkeypatch 它：`tests/test_pipeline_flash.py` 有一个 autouse 夹具把它打开（那个文件测的是开闸以后
+  开始、继续怎么走），闸关着的几条在用例里显式关上；node 测试的整页接线同理，hello 里显式带 `flash_start_enabled: true`。
+
 ### 9.1 消息
 
-- 页面 → 后端：`{"type": "flash_control", "action": "start" | "stop" | "resume"}`。只读 `action`，别的键一概不看
-  （地址、请求头、请求体都写死）；不在白名单 `flash_sale.CONTROL_ACTIONS` 里的（大小写不同、带路径、带参数、不是字符串）
-  什么都不做、不回结果。没装闪购助手、演示模式（不接闪购）时同样什么都不做。
+- 页面 → 后端：`{"type": "flash_control", "action": "stop" | "resume"}`；开始点两下、两条都发（§9.2「开始点两下」）：
+  `{"type": "flash_control", "action": "start", "step": "arm", "id": 编号}`，再 `{…, "step": "fire", "id": 同一个编号}`。
+  只读 `action`，开始另读 `step`、`id`，别的键一概不看（地址、请求头、请求体都写死）；不在白名单 `flash_sale.CONTROL_ACTIONS`
+  里的（大小写不同、带路径、带参数、不是字符串）什么都不做、不回结果。没装闪购助手、演示模式（不接闪购）时同样什么都不做。
 - 后端 → 控制页：`{"type": "flash_control_result", "action", "ok", "error"}`，广播给所有控制页（`handle_control`
-  不知道是哪个连接发的）。`i18n.DATA_ONLY`；手机 DENY；浮窗不收。只带代码，文案在前端。
+  不知道是哪个连接发的）。`i18n.DATA_ONLY`；手机 DENY；浮窗不收。只带代码，文案在前端。停止再试过的（§9.2「停止」）
+  另带 `tries`：一共试了几次，2 起；只试了一次的不带这个键。
   `ok=true` 时 `error` 为 null：闪购助手接受了（200）。`ok=false` 时 `error` 是下面三种之一：
   - 后端自己的代码（`flash_sale.CONTROL_OWN_ERRORS`）：
 
     | 代码 | 意思 |
     |---|---|
-    | `no_status` | 最近一次查 `/status` 不是连上并读懂了，或者读懂了却不像闪购助手的回话：没读密钥、没发（§9.2） |
+    | `no_status` | 开始、继续：最近一次查 `/status` 不是连上并读懂了，或者读懂了却不像闪购助手的回话；停止：发之前当场读的那一次没读懂，或者 `schema` 不是 1。都没读密钥、没发（§9.2） |
     | `no_token` | 控制密钥读不出：没发 |
     | `unreachable` | 连不上 9334（连接被拒，或连接阶段就超时） |
     | `no_answer` | 连上了，2 秒内没回完，或者没回话就断开 |
@@ -254,6 +267,8 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
     | `no_control` | 404 / 405：这个版本的闪购助手没有控制接口（0.8.0 以前只有 `/status`） |
     | `failed` | 后端自己出错（终端有异常的类型名） |
     | `not_seen` | 已接受，但 30 秒内没看到生效（§9.3）。接受之后另发的第二条，同一个 `action` |
+    | `local_only` | 开始、继续来自没带 Origin 的本机进程：本机脚本只能停（§9.4）。没发 |
+    | `not_confirmed` | 开始没有对得上的两下：没带 `step`、前面没有 `arm`、编号对不上、离 `arm` 不到 0.4 秒或满 6 秒（§9.2）。没发 |
 
   - `http_<状态码>`：403（防冒充的条件没过，例如密钥对不上）、3xx（不跟随）、5xx 等；409 但读不出代码也是 `http_409`；
   - 其余都是闪购助手 409 给的代码，原样（同 `/status` 的代码字段清洗）。契约里有 no_page、login_required、loading、
@@ -262,20 +277,47 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
     （停止刚收下时页面里有人点了开始，以开始为准，只有停止会收到，极少）；认不出的原样交给页面显示，不猜原因。
   - 0.9.3 起停止在页面刷新、脚本没装好时也收下，回 `200 {"ok":true,"accepted":"stop","queued":true}`；
     `queued` 不认识也照成功处理，之后照常等 `/status` 的 running 变成 false。请求体写错回 400（`http_400`）。
-- 状态里的 `control`（§4）是指令的进度：`{action, phase: "sending"}` 在途，`{action, phase: "waiting"}` 已接受、等生效。
-  页面靠它禁用按钮、写「正在开始…」，重连的页面从 hello 里也拿得到；不带时刻，等多久由后端判。
+- 状态里的 `control`（§4）是指令的进度：`{action, phase: "sending"}` 在途，`{action, phase: "waiting"}` 已接受、等生效，
+  `{action: "stop", phase: "retrying"}` 停止没被接受、等着隔 3 秒再试（§9.2「停止」）。页面靠它禁用按钮、写「正在开始…」
+  「正在重试…」，重连的页面从 hello 里也拿得到；不带时刻，等多久由后端判。
 
 ### 9.2 发送
 
-- **发之前看状态**（`StatusTracker.control_refusal()`）：最近一次查 `/status` 必须连上并读懂了（`last_ok()`），而且
+- **开始、继续：发之前看状态**（`StatusTracker.control_refusal()`）：最近一次查 `/status` 必须连上并读懂了（`last_ok()`），而且
   `schema` 是 1、`page` 是契约里的七个代码之一（`flash_sale.PAGE_CODES`）。「连上以后第一次没查到」时发布的照旧是上一份
   ok 状态、页面上按钮还在，但这时也不算。不是就不读密钥、不发，`error=no_status`；后两种终端另带原因（`schema`、`page`）。
   9334 上回话的不一定是闪购助手：`normalize` 收任何 JSON 对象，`{"status":"ok"}` 甚至 `{}` 都算「连上并读懂了」，
   页面照样画；密钥只给刚刚还在好好回 `/status`、回话的样子也对得上契约的那个。在等生效的上一个指令照旧等着。
-  代价：闪购助手以后改了 `schema`、加了 `page` 代码，控制会一直 `no_status`，直到这里跟上（终端那一行带着原因，
+  代价：闪购助手以后改了 `schema`、加了 `page` 代码，开始、继续会一直 `no_status`，直到这里跟上（终端那一行带着原因，
   schema 不是 1 另有一行）。
+- **停止：当场读一次就发，没被接受的再试**（`_flash_stop_run`；直播助手平台轮廓 §5.5、§9.2 第 7 条，用户 10-29 同意）。
+  停止是出事时最要发得出去的那一个，上一条挡它的几种情况都不该挡：读失败一次以后要隔 15 秒才再读，这 15 秒里会一律
+  `no_status`；闪购助手以后加一个新的 `page` 代码，旧版本程序就永远停不了它；页面正在刷新，闪购助手自己也拒。所以：
+  - 不看上一次轮询读得怎么样。发之前当场读一次 `/status`（`flash_sale.stop_precheck`）：连得上、`schema` 是 1 就读密钥、
+    发。认不出的 `page` 代码只影响显示，不挡停止。`schema` 不是 1 的不发、不再试（`no_status`，终端带 `schema`）。
+  - 再试（`flash_sale.STOP_RETRY_CODES`）：连不上（当场读 `/status` 连不上也算）、当场读的 `/status` 没读懂、发出了没回话
+    （`no_answer`）、闪购助手回 `busy`、`loading`、`no_response`：隔 3 秒（`STOP_RETRY_GAP_SEC`；闪购助手两次指令之间要隔
+    2 秒）再试，直到收到别的结果，或者从第一次算起再试一次就要超过 30 秒（`STOP_RETRY_SEC`）。都连不上时是第 0、3……30 秒，
+    一共 11 次。每一次都重新读 `/status`、重新读密钥。等着再试的那几秒，`control` 是 `{stop, retrying}`。
+  - 不再试：`awaiting_approval`、`captcha`（要人去专用 Chrome 里处理，页面那句说去哪儿点，§9.6）、`not_running`、别的拒绝、
+    `no_token`、`failed`。接受了照常等生效（§9.3）。结果只发一条，再试过的带 `tries`。
+  - 等着再试时点了开始、继续：还没发的重试立刻作废（终端一行），这一下照常走上一条（没发出去也照样作废：人最后要的是开始）；
+    停止不另发结果。这时再点停止：已经在试，什么都不做。
+  - 别的指令（开始、继续）一律不自动重发。
+- **开始点两下，两下都到后端**（`_flash_take_arm`；直播助手平台轮廓 §4.4、§9.2 第 6 条，用户 10-29 同意）。以前「点两下」
+  只做在页面里，后端只收到一条 `start`，分不出是人点了两下，还是一个脚本发了一条。现在页面第一下发 `step=arm` 带一个新编号
+  （`flash.js flashNewArmId`，16 位十六进制），后端只记下编号和此刻（单调时钟）、不回话；第二下发 `step=fire` 带同一个编号，
+  离 `arm` 0.4 秒（`flash_sale.START_GUARD_SEC`）以上、6 秒（`START_CONFIRM_SEC`）以内才往下走（再看上一条「发之前看状态」）。
+  不是这样的一律不转发，结果 `not_confirmed`，终端带是哪一种：`no_step`（只发了一条，旧页面、脚本）、`no_arm`（前面没有 `arm`，
+  或已经用掉、被停止清掉了；编号不是 1–64 个字母、数字、`_`、`-` 的 `arm` 不记）、`other_arm`（编号不是最近那次 `arm` 的：
+  别的控制页又点了第一下，就换成那一个）、`too_soon`（双击一次）、`too_late`。`arm` 只用一次，对不对得上都用掉；停止也把它清掉。
+  编号由页面生成，只用来把两下对上，不是口令（同一用户的进程想发什么就发什么，§9.4）。继续、停止点一下就发。
+- **本机脚本只能停**（`app/server.py CONTROL_SOURCE`；轮廓 §5.6、§9.2 第 6 条）：`_ws` 处理每一条控制消息时记下是哪种连接
+  （带本机同端口 Origin 的页面是 `page`，没带 Origin 的本机进程是 `local`），处理完复原。开始、继续来自 `local` 的：不读密钥、
+  不发，结果 `local_only`（`arm`、`fire` 都一样，也碰不掉控制页刚点的第一下）。停止照发（安全的方向）。不改 `on_control` 的
+  签名：直接调 `handle_control` 的测试和老写法拿到缺省的 `page`，按控制页算。
 - **在途时**（`phase=sending`）新的指令不发、不回结果：同一页面连点、另一个控制页同时点，都只发第一个。
-  页面按 `control.phase` 把按钮禁用。
+  页面按 `control.phase` 把按钮禁用。停止在等着再试（`phase=retrying`）时不算在途，见上一条。
 - **密钥**：`~/Library/Application Support/FlashSaleHelper/control-token`，每次发之前读一遍（`flash_sale.read_control_token`，
   契约：删掉文件后闪购助手下次启动会换一个新的）。`O_NOFOLLOW` 打开（文件本身是符号链接就不读）、`O_NONBLOCK`
   （管道、设备文件打开时不卡住事件循环），`fstat` 确认是普通文件，最多读 1025 字节（读满就是太长），按 ASCII 解码、
@@ -292,7 +334,7 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
   「停止」不该跟着晚。轮询和控制两条路的发布在一把锁里排队（`_flash_refresh`），锁里才合成状态，所以页面不会停在旧的进度上。
 - **没接受、没发出、出错**：`control` 换回发之前的那一份。例如开始在等生效时点了停止、被闪购助手拒了（busy），开始照旧等着。
 - **退出时不取消在途的请求**：`stop_flash_watch` 只停轮询。POST 最多 4 秒，让它发完——尤其是「停止」，半路取消了不知道
-  闪购助手收到没有。进程等不等得到它看收尾的时限；结果广播不到也没关系（页面已经关了）。
+  闪购助手收到没有。停止的重试也不取消。进程等不等得到它看收尾的时限；结果广播不到也没关系（页面已经关了）。
 
 ### 9.3 接受以后：等它生效
 
@@ -313,13 +355,16 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 ### 9.4 谁能发、安全边界
 
 - 能发 `flash_control` 的：本机控制页（Origin 是本机同端口的页面），以及**没带 Origin 的本机进程**（curl、本地脚本：
-  `app/server.py` 的 `_classify_origin` 把它们也当控制面）。手机同看发不进来（`app/viewer.py` 的 `_handle_inbound`
-  只认 retranslate）；浮窗页的入站一律丢弃；别的网页过不了 Origin 检查。
+  `app/server.py` 的 `_classify_origin` 把它们也当控制面）——后者只能发停止，开始、继续回 `local_only`（§9.2「本机脚本只能停」）。
+  手机同看发不进来（`app/viewer.py` 的 `_handle_inbound` 只认 retranslate）；浮窗页的入站一律丢弃；别的网页过不了 Origin 检查。
+- 「本机脚本只能停」和「开始两下都到后端」**防的是误触**（自己的截图脚本、测试工具、别的小程序只发一条消息），**不是安全
+  边界**：非浏览器进程想带什么 Origin 就带什么，想发两条就发两条；同一用户的进程本来就读得到密钥。自动化浏览器打开真实的
+  8765 会带本机 Origin，技术上能点两下开始，只能靠规矩（项目 CLAUDE.md：自动化浏览器只开演示模式、单独端口）。
 - 所以闪购控制的**安全边界是「连得上本机 127.0.0.1 的控制端口」，不是密钥文件的 600 权限**。同一用户的进程本来就能
   直接读那个文件、自己去 POST 9334，借这条路不多得什么；多出来的只是连得上回环、却读不到这个用户 `~/Library` 的进程
   （别的 macOS 账户、带网络权限的沙盒应用）。单用户的中控电脑上可以接受：没带 Origin 的连接本来就能发 `disk_delete`、
-  `apply_update`，比开始、停止危险。没做「没带 Origin 的连接丢掉 `flash_control`」：非浏览器进程想带什么 Origin
-  就带什么，这道检查挡不住真想绕过的进程。
+  `apply_update`，比开始、停止危险。没做「没带 Origin 的连接丢掉 `flash_control`」：停止要让本机脚本也发得出去（安全的方向），
+  而且非浏览器进程想带什么 Origin 就带什么，这道检查挡不住真想绕过的进程。
 - 契约本身的限制：有进程占了 9334、又照着契约回 `/status`，就拿得到密钥（本机回环上的明文 HTTP，客户端没法认证
   服务端）。这里能做的是 §9.2 的「发之前看状态」：连上并读懂了、`schema` 是 1、`page` 是契约里的代码才发。这挡得住
   碰巧占着 9334、回了个 JSON 对象的别的服务（只要是对象就算「读懂了」），挡不住存心冒充的进程——它照着契约回就是了。
@@ -343,7 +388,16 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 [警告] 闪购助手：中控请求停止 → 出错（failed：RuntimeError）
 [信息] 闪购助手：中控请求开始 → 已生效
 [警告] 闪购助手：中控请求开始 → 30 秒内没看到生效
+[警告] 闪购助手：中控请求停止 → 没有接受（busy），30 秒内每 3 秒再试      停止第一次没被接受、接下来再试（§9.2）
+[信息] 闪购助手：中控请求停止 → 已接受（第 3 次）
+[警告] 闪购助手：中控请求停止 → 连不上（unreachable），一共试了 11 次
+[信息] 闪购助手：中控请求开始，停止的重试作废
+[警告] 闪购助手：中控请求开始 → 没有发出（not_confirmed：too_late）  另有 no_step、no_arm、other_arm、too_soon（§9.2）
+[警告] 闪购助手：中控请求继续 → 没有发出（local_only）
+[信息] 闪购助手：中控请求开始 → 没有发出（开始、继续还没开放）       发布闸关着（§9 开头）
 ```
+
+停止再试的中间几次不另打行：第一次没被接受打一行，最后的结果打一行。
 
 闪购助手那边也会把每个控制指令（包括被拒绝的）记一条 info 级的 alert（例如「🖥 中控请求开始」），浮层的「最近记录」里
 看得到。
@@ -367,7 +421,9 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 | `paused_reason=awaiting_approval` | 停止（不能点）、打开 | 确认框处理完以后才能从这里停止。（契约：这时回 409 awaiting_approval） |
 | 在途（本页刚点的，或 `control.phase=sending`） | 三颗都不能点，按下的那颗写「正在发送…」 | 不写 |
 | 等生效（`control.phase=waiting`，状态还没显示生效） | 按下的那颗写「正在开始…」「正在停止…」「正在继续…」、不能点；开始、继续不能点（闪购助手这时回 busy），停止照样能点（停是安全的方向） | 不写（免得和「正在开始…」打架） |
+| 停止等着再试（`control.phase=retrying`） | 停止写「正在重试…」、不能点（后端已经在试）；开始、继续照常（点了，后端把还没发的重试作废） | 停止还没被接受，30 秒内每 3 秒再试一次。（连不上、读不出时那一排一颗按钮都不出，这句照样写） |
 | 和本地服务断开 | 三颗都不能点（「打开」本来就禁用） | 不写 |
+| 发布闸关着（hello 的 `flash_start_enabled` 不是 true，出厂就是这样） | 开始、继续不出；停止照上面的规则 | 版本那句换成「闪购助手 0.8.0 起才能从这里停止。」；其余照上面 |
 
 - **页面没准备好时旁边那句**（`flashNotReadyNote`）：照 decisions-step2（用户 10-27 定的「旁边一句说明为什么，照 /status
   的 page 文案」）写 `flashPageText` 的那句，例如「专用 Chrome 停在 TikTok 登录页，登录后才能继续。」——和下面主句里那句是
@@ -385,16 +441,21 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
   照常出按钮、点了才说没有控制接口，现在和两三段的一样只留「打开」。认不出的照常出按钮，
   回来 404 / 405 就是 `no_control`「这个版本的闪购助手没有控制接口。」。不记住这个结果去藏按钮：再点一次就再说一次。
 - **最底下那句**（`#flash-desc`，`renderFlashControls`）：三颗里有一颗露着就写「这里只能开始、停止和继续，其他操作请到
-  闪购助手里。」，一颗都没有时换回第一步那句「这里只显示状态。要操作，请到闪购助手里。」，不和版本那句打架。
+  闪购助手里。」（发布闸关着时写「这里只能停止，其他操作请到闪购助手里。」），一颗都没有时换回第一步那句「这里只显示状态。
+  要操作，请到闪购助手里。」，不和版本那句打架。
+- **发布闸关着时的主句**：没有「继续」按钮，确认框里点了取消的暂停照旧写长的那句「……要在闪购助手的面板上点继续。」
+  （`flashLines` 的第三个参数、`renderFlashPanel` 的 `gated`）。
 - **「开始」点两下**（`flash.js flashStartClick` + `app.js`）：第一下把字换成「再点一次开始」，6 秒（`FLASH_START_CONFIRM_MS`）
   内再点才发，到点复原；武装后 400 毫秒（`FLASH_START_GUARD_MS`）内的第二下不算——鼠标双击一次就发出开始的话，专用 Chrome
   里的页面会被刷新。定时器被节流没跑也按时刻算（满 6 秒的那一下当作重新点第一下）。关上浮层、重连的 hello、「开始」不在了
-  或不能点了，武装都作废。只改这一颗：清空字幕、清空弹幕那套（`confirmTwice`，「再点确认 / Clear?」）不动。停止、继续点一下
-  就发。
-- **发什么**：只发 `{"type": "flash_control", "action": …}`。没发出去（断线）就不装作发出去了：`#flash-note` 写「与本地服务
-  断开，正在重连——稍候再试。」，不进在途。
+  或不能点了，武装都作废。两下都发给后端（§9.2「开始点两下」）：第一下发 `step=arm` 和新编号（把上一句结果收掉），第二下发
+  `step=fire` 和同一个编号，后端照同样的 400 毫秒、6 秒再判一次；后端判不过（比如第一下在路上被事件循环耽误了）回
+  `not_confirmed`，那句话叫人再点两下。第一下没发出去（断线）就不武装，写断线那一句：不然第二下的 `fire` 后端没见过 `arm`。
+  只改这一颗：清空字幕、清空弹幕那套（`confirmTwice`，「再点确认 / Clear?」）不动。停止、继续点一下就发。
+- **发什么**：停止、继续只发 `{"type": "flash_control", "action": …}`；开始见上一条。没发出去（断线）就不装作发出去了：
+  `#flash-note` 写「与本地服务断开，正在重连——稍候再试。」，不进在途。
 - **在途**：点出去马上把这一排禁用（本页记一个 `flashPending`），不等后端把 `phase=sending` 发回来。放开的时机：状态里
-  `control.phase` 成了 sending（之后由状态说了算）、收到任何一条 `flash_control_result`（广播给所有控制页，别的页点的也算）、
+  `control.phase` 成了 sending 或 retrying（之后由状态说了算）、收到任何一条 `flash_control_result`（广播给所有控制页，别的页点的也算）、
   重连的 hello。后端在途时收到的第二个指令直接丢、不回话（§9.2），页面不能一直等它；后端还没处理到这个指令时推来的那份
   状态（`control` 还是 null）不放开。
 - **结果**（`flash.js flashResultLine`，写进 `#flash-note`）：接受了（`ok: true`）不写，把上一句收掉——状态自己会变，按钮上
@@ -402,7 +463,10 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
   captcha 用页面那几句，awaiting_approval 用确认框那句，其余各一句；认不出的原样放进 `translate="no"`）；`http_<状态码>`
   写「没有接受：127.0.0.1:9334 回了 HTTP {n}。」（9334 上回话的不一定是闪购助手）；本程序这边的代码照后端走到了哪一步写
   「没有发出：…」「发出了，但…看看状态有没有变。」；`not_seen` 按动作写「30 秒内没看到闪购助手开始运行 / 停下 / 继续运行。」。
-  只写看到的，不猜为什么。
+  停止被拒在确认框、验证码上（后端不再试）写清去哪儿点：「闪购助手没有接受停止：专用 Chrome 里弹着确认框。到那里点确定或
+  取消，再点停止。」「……专用 Chrome 的页面上有验证码。到那里处理完验证码，再点停止。」（`flashStopBlockedText`；开始、继续
+  照旧是上面那几句）。再试过的停止（结果带 `tries`）句子前面加「试了 n 次，」。只写看到的，不猜为什么。
+- **停止在等着再试**：状态里的 `control.phase=retrying` 也放开本页记着的在途（同 sending：之后由状态说了算）。
 - **过时的结果自己收掉**（审查第 3 条）：`#flash-note` 记着那句是哪个动作的结果；之后某一份状态让 `flashControlDone`（后端
   `control_done` 的抄本，`shared-rules.json` 的 `control_done`）说这个动作已经生效，就收掉——浮层开着、关着都一样。最典型的
   是浮层关着时到的 `not_seen`，之后闪购助手开始运行了，下次打开浮层不会再看到那句旧话。断线、open 没打开那几句不是哪个动作
@@ -454,8 +518,11 @@ Flash Sale。实测余量和 G10 场景在 `docs/i18n-style.md` §4.2。
   200 回来了就说明我们发的请求每一条都满足；另有一组对照证明它真的会拦。密钥是 `tmp_path` 里的假文件（`7e57` 重复
   16 次），它的任何一截都不许出现在终端、广播、config 里。409 各代码、404 / 405、超时、重定向不跟随、
   不读环境变量里的代理（本机临时端口上只记账的假代理）都在这里。
-- `tests/test_pipeline_flash.py` 的控制部分换掉 `_flash_post`、`_flash_read_token`（假 POST、假密钥），钉住
-  no_status、在途、等生效、30 秒的两条边、过渡不变色、退出不取消、终端两种界面语言下逐字节相同；最后一条整条链走真的
+- `tests/test_pipeline_flash.py` 的控制部分换掉 `_flash_post`、`_flash_read_token`（假 POST、假密钥）和停止两次尝试之间的
+  `_flash_retry_sleep`（拨钟，不真的睡），钉住 no_status、停止当场读 `/status`、停止再试（哪些代码再试、3 秒一次、30 秒为止、
+  重试中点开始作废、开始和继续不重发）、发布闸、开始的两下（0.4 秒、6 秒两条边，对不上的每一种）、本机脚本只能停（另有一条
+  走真的 `_ws`：没带 Origin 的连接和带本机 Origin 的页面）、在途、等生效、30 秒的两条边、过渡不变色、退出不取消、
+  终端两种界面语言下逐字节相同。用例里开始一律用 `tap` / `press` 点两下（arm、单调时钟拨 1 秒、fire）；最后一条整条链走真的
   `read_control_token` + `post_control` + 上面那个假闪购助手。`RecordingServer` 没有连着的页面，广播从不让出事件循环，
   所以另有两条用 `HeldServer`（卡住一条 `flash_sale` 广播，像慢页面那样）钉住 §9.2 的两件事：在途那一份的广播还卡着时
   POST 已经发出去了；轮询和控制同时发布时，页面最后收到的、config 里的都是最新的控制进度。
@@ -475,12 +542,14 @@ Flash Sale。实测余量和 G10 场景在 `docs/i18n-style.md` §4.2。
   （`flashControlView` 的每条规则、两次点击的 400 毫秒和 6 秒两条边、结果的每一句、不续开原因和序号；`shared-rules.json`
   的四节逐条跑前端那一半；过渡 30 秒的边从页面这一边看：等生效时不变色、`control` 收掉以后照原规则）、
   `flash-control-button.test.mjs`（真跑 `app.js`：在途的放开时机、过时结果收掉、焦点、断线、最底下那句、HTML 结构）。
-  `test_flash_sale.py::test_the_panel_ranks_orders_and_quotes_numbers_like_the_backend` 另钉着页面写死的「30 秒」和
-  `FLASH_ACTIONS`、`FLASH_OWN_ERRORS`、`FLASH_QUIET_PAGES` 三张表与后端一样。
+  `test_flash_sale.py::test_the_panel_ranks_orders_and_quotes_numbers_like_the_backend` 另钉着页面写死的「30 秒」、
+  停止再试的 `FLASH_STOP_RETRY_SEC`、`FLASH_STOP_RETRY_GAP_SEC` 和 `FLASH_ACTIONS`、`FLASH_OWN_ERRORS`、`FLASH_QUIET_PAGES`
+  三张表与后端一样。
 - G10（`TLT_DOM_SCAN=1 pytest tests/test_i18n_dom.py`）：`live-flash*`、`live-flash-zh*`、`home-flash*` 场景，
   `config.flash_sale` 由 `flash_sale.StatusTracker` 从 running.json 生成。顶部那一排另有 `flash-ctl-<种类>`（英文，进扫描）
   和 `flash-ctl-<种类>-zh`：idle、armed（点了一下开始）、running、paused、awaiting、old（0.7.3）、starting（开始被接受、
-  页面出错且陈旧）、skip（五种原因、一个认不出的代码、序号）、rejected（409 busy），默认 1000px 窗口，查哪几颗露出、能不能点、
+  页面出错且陈旧）、skip（五种原因、一个认不出的代码、序号）、rejected（409 busy）、gated（在运行、发布闸关着：只有停止），
+  除了 gated，hello 里都带开闸的 `flash_start_enabled: true`；默认 1000px 窗口，查哪几颗露出、能不能点、
   文案，量浮层和这一排不溢出、在同一行，顶栏下限不放宽。截图（`TLT_DOM_SHOTS`）带 `--force-prefers-reduced-motion`
   （`SHOT_FLAGS`）：浮层弹出动画半路截下来是半透明的（审查第 8 条）。直播转写进行中不开 Chrome。
 

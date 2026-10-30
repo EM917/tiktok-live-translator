@@ -729,6 +729,38 @@ def test_every_page_code_of_the_contract_lets_control_through():
     assert tuple(re.findall(r'case "(\w+)":', body)) == fs.PAGE_CODES
 
 
+@pytest.mark.parametrize("kind, value, expected", [
+    ("ok", sample("running"), None),
+    ("ok", with_fields("running", page="maintenance"), None),    # 认不出的 page 只影响显示，不挡停止
+    ("ok", with_fields("running", page=None), None),
+    ("ok", {"schema": 1}, None),
+    ("unreachable", None, ("unreachable", None, True)),
+    ("bad_response", "no_answer", ("no_status", "no_answer", True)),
+    ("bad_response", "json", ("no_status", "json", True)),
+    ("ok", [1, 2], ("no_status", "not_object", True)),
+    ("ok", {"status": "ok"}, ("no_status", "schema", False)),
+    ("ok", {}, ("no_status", "schema", False)),
+    ("ok", with_fields("running", schema=2), ("no_status", "schema", False)),
+    ("ok", with_fields("running", schema="1"), ("no_status", "schema", False)),
+])
+def test_stop_checks_the_status_it_reads_on_the_spot(kind, value, expected):
+    """停止发之前当场读的那一次（stop_precheck）：连得上、schema 是 1 就发；page 不看（直播助手平台轮廓 §5.5）。
+    连不上、没读懂的再试；schema 不对的不发、也不再试（回话不像闪购助手的，同 control_refusal 的 schema 那一条）。"""
+    assert fs.stop_precheck(kind, copy.deepcopy(value)) == expected
+
+
+def test_only_answers_that_may_clear_up_soon_make_stop_try_again():
+    """停止再试的回话：连不上、发出了没回话、闪购助手回 busy、loading、no_response。确认框、验证码要人去处理，
+    接受了、还没开始运行、别的拒绝、本程序出错都不再试。闪购助手两次指令之间要隔 2 秒：间隔 3 秒，30 秒为止。"""
+    assert fs.STOP_RETRY_CODES == ("unreachable", "no_answer", "busy", "loading", "no_response")
+    for code in fs.STOP_RETRY_CODES:
+        assert fs.stop_should_retry(code), code
+    for code in (None, "awaiting_approval", "captcha", "not_running", "already_running", "no_page", "login_required",
+                 "error", "bad_reply", "no_control", "http_403", "http_409", "no_token", "failed", "brand_new_code"):
+        assert not fs.stop_should_retry(code), code
+    assert (fs.STOP_RETRY_SEC, fs.STOP_RETRY_GAP_SEC) == (30, 3)
+
+
 @pytest.mark.parametrize("case", SHARED["sort"], ids=lambda c: c["why"])
 def test_the_sort_order_matches_the_shared_table(case):
     """商品的先后：后端 product_sort_key 和前端 flashSortProducts 吃同一张表。"""
@@ -810,7 +842,9 @@ def test_the_panel_ranks_orders_and_quotes_numbers_like_the_backend():
     - flashRank 的排序表和 flash_sale._RANK（卡住的 0 档、认不出的最后一档）；
     - FLASH_ATTN_ORDER（浮层主句的先后）和 attention() 排出来的顺序；
     - 文案里写死的数：连不上「每 15 秒再查一次」= POLL_DOWN_SEC，「停了超过 1 分钟」= STUCK_SEC，
-      没有回应「在 2 秒内」= HTTP_TIMEOUT_SEC，「30 秒内没看到」= CONTROL_WAIT_SEC；
+      没有回应「在 2 秒内」= HTTP_TIMEOUT_SEC，「30 秒内没看到」= CONTROL_WAIT_SEC，停止再试那句的「30 秒」「3 秒」=
+      STOP_RETRY_SEC、STOP_RETRY_GAP_SEC（FLASH_STOP_RETRY_SEC、FLASH_STOP_RETRY_GAP_SEC），「开始」两下之间的 0.4 秒、6 秒 =
+      START_GUARD_SEC、START_CONFIRM_SEC（FLASH_START_GUARD_MS、FLASH_START_CONFIRM_MS，not_confirmed 那句里也写着）；
     - 控制那几张表：FLASH_ACTIONS = CONTROL_ACTIONS，FLASH_OWN_ERRORS = CONTROL_OWN_ERRORS（页面按它分「本程序这边的」和
       「闪购助手没有接受」），FLASH_QUIET_PAGES = START_QUIET_PAGES（开始后的过渡里不算要人处理的页面状态）。"""
     js = (Path(__file__).resolve().parent.parent / "web" / "flash.js").read_text(encoding="utf-8")
@@ -826,6 +860,12 @@ def test_the_panel_ranks_orders_and_quotes_numbers_like_the_backend():
     assert fs.HTTP_TIMEOUT_SEC == 2 and "在 2 秒内没有回应" in js and "didn’t answer within 2 sec." in js
     assert fs.STUCK_SEC == 60 and "停了超过 1 分钟" in js and "Stopped for over 1 min" in js
     assert fs.CONTROL_WAIT_SEC == 30 and js.count("30 秒内没看到闪购助手") == 3 and js.count("within 30 sec.") == 3
+    for name, want in (("FLASH_STOP_RETRY_SEC", fs.STOP_RETRY_SEC), ("FLASH_STOP_RETRY_GAP_SEC", fs.STOP_RETRY_GAP_SEC),
+                       ("FLASH_START_CONFIRM_MS", fs.START_CONFIRM_SEC * 1000), ("FLASH_START_GUARD_MS", fs.START_GUARD_SEC * 1000)):
+        assert int(re.search(r"var {} = (\d+);".format(name), js).group(1)) == want, name
+    assert (fs.START_GUARD_SEC, fs.START_CONFIRM_SEC) == (0.4, 6)
+    assert "第一下之后 0.4 到 6 秒之间才算" in js and "the second 0.4 to 6 sec after the first" in js
+    assert fs.ARM_ID.fullmatch("0123456789abcdef") and not fs.ARM_ID.fullmatch("x" * 65)
     assert "在 2 秒内没有回应。看看状态" in js and "didn’t answer within 2 sec. Check" in js
     for name, want in (("FLASH_ACTIONS", fs.CONTROL_ACTIONS), ("FLASH_OWN_ERRORS", fs.CONTROL_OWN_ERRORS),
                        ("FLASH_QUIET_PAGES", fs.START_QUIET_PAGES)):
