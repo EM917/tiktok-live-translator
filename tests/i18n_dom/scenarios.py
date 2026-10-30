@@ -94,9 +94,15 @@ HOME_BASES = ("home-idle", "home-zh", "home-flash", "home-flash-zh")
 # §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限。名字是虚构的，和文档里那个真实的基线品牌同宽
 # （同 STREAMER 的做法：同一组字形重新排列，逐 1/64 像素量过）
 ZH_QUIET_BRAND = "Allura Belt Nalla"
+# 首页标题区右上角的「中文 / English」两段切换（用户 2026-10-29）和它旁边的图标、标题，以及界面语言那一行的名字和摘要
+HOME_LANG_MEASURE = ("#lang-quick", "#lang-quick-zh", "#lang-quick-en", ".sp-glyph", ".sp-title",
+                     "#lang-head .set-name", "#lang-summary")
+# 「字幕译成」下面的就地提示和里面的切换按钮（用户 2026-10-29：直播中也给按钮）
+HINT_MEASURE = ("#target-hint", "#target-hint-switch")
 DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm",
                    "#float-btn", "#float-btn .btn-label", "#float-btn .i", ".ctl-text", "#target-lang",
-                   TARGET_EXTRA_SELECTED, "#flash-btn", "#flash-btn .btn-label", "#flash-btn .i", "#font-btn", "#font-ctl")
+                   TARGET_EXTRA_SELECTED, "#flash-btn", "#flash-btn .btn-label", "#flash-btn .i", "#font-btn",
+                   "#font-ctl") + HOME_LANG_MEASURE + HINT_MEASURE
 GUARD_MEASURE = (".guard-bar", ".guard-bar-text", ".guard-drawer", ".guard-panes", ".guard-pane:not(.hidden)", ".comment-list",
                  ".guard-state")
 PHONE_MEASURE = (".status-pill", "#conn-text")
@@ -106,9 +112,14 @@ FLOAT_MEASURE = (".f-root", "#f-caption", "#f-comments")
 # 设置行展开、直播中抽屉的「最近需要留意」页签、抽屉的「关注名单」页签、熔断后的胶囊与「本场重新启用」
 GUARD_NAMES = ("home-guard", "live-guard", "live-guard-marked", "live-guard-tripped")
 GUARD_ZH = tuple(n + "-zh" for n in GUARD_NAMES)
+# 直播中在「字幕译成」里选了另一种界面语言（英文页选简体中文、中文页选 English）：下拉下面弹出就地提示，
+# 带切换界面的按钮。窗口模式（带浮窗按钮）默认的 1000px 宽；英文页进扫描，中文页只量。键是场景名，值是
+# (基础场景, 页面上当前的目标, 选哪一项)
+HINT_WIDTH = 1000
+HINTS = {"live-hint": ("live-float", "en", "zh-CN"), "live-hint-zh": ("live-float-zh", "zh-CN", "en")}
 DESKTOP_EN = ("home-idle", "home-selfcheck-fail", "live-full", "live-float", "connecting", "offline",
               "error-4003110", "live-bad", "reconnect-no-audio", "live-flash", "home-flash",
-              "home-asr-fetch") + GUARD_NAMES
+              "home-asr-fetch", "live-hint") + GUARD_NAMES
 # 新装机、语音模型还没下载的首页（输入框下面那一行 #asr-model-hint 和自检里的「现在下载」）：英文那份进上面的扫描，
 # 两份都量这一行放不放得下（tests/test_i18n_dom.py）
 ASR_FETCH_HOMES = ("home-asr-fetch", "home-asr-fetch-zh")
@@ -788,6 +799,18 @@ def with_extra_target(scenario):
     return out
 
 
+def with_target_hint(scenario, name, target, pick):
+    """同一个直播中场景，窗口 HINT_WIDTH 宽，当前目标换成 target；开页后只做一件事：在「字幕译成」里选 pick
+    （另一种界面语言）。原场景的点击（同看、换主播）不做：那几个浮层和这个提示互斥，开着别的就量不到它。
+    提示 8 秒后才自己收起，扫描在约 2.5 秒时取，还开着。"""
+    out = copy.deepcopy(scenario)
+    out["name"] = name
+    out["size"] = [HINT_WIDTH, scenario["size"][1]]
+    out["messages"][0]["config"]["target_lang"] = target
+    out["clicks"] = [{"select": "#target-lang", "value": pick}]
+    return out
+
+
 def resized(scenario, width, height=None):
     """同一个场景换一个窗口大小：live-full@1100 这样命名。"""
     out = copy.deepcopy(scenario)
@@ -843,4 +866,6 @@ def build(tmp):
         for width in ZH_FLOAT_WIDTHS:
             sc = resized(out[base], width)
             out[sc["name"]] = sc
+    for name, (base, target, pick) in HINTS.items():
+        out[name] = with_target_hint(out[base], name, target, pick)
     return out

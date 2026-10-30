@@ -85,7 +85,7 @@ The first launch takes a few minutes. The app sets up its own Python environment
 
 Choose the language captions are translated into from the Captions in menu in the top bar: Simplified Chinese, Traditional Chinese, English or Spanish. It starts on Chinese, or on English for a new install with an English interface. This menu changes only the captions, not the interface. If an earlier version saved another language here, or the app starts with `--target` and another language code, captions stay in that language and the menu shows it as an extra item.
 
-The interface is in English or Chinese. A new install follows your system language. An install that was already in use before the English interface existed stays in Chinese after updating. Settings → App Language changes it.
+The interface is in English or Chinese. A new install follows your system language, or uses Chinese when Chinese is anywhere in your macOS preferred languages. An install that was already in use before the English interface existed stays in Chinese after updating. To change it, click 中文 or English at the top right of the home page, or use Settings → App Language.
 
 During a session, Switch Streamer moves to another streamer. Stop returns to the home page and keeps that session's captions under Previous Session.
 
@@ -404,7 +404,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 字幕译成哪种语言，在顶栏的「字幕译成」菜单里选：简体中文、繁体中文、英语、西班牙语。默认是中文，新装且界面是英文时默认是英文。这个菜单只改字幕，不改界面。以前的版本在这里存过别的语言，或者用 `--target` 加别的语言代码启动时，字幕照旧译成那种语言，菜单里多出这一项。
 
-界面有中文和英文两种。新装的程序跟着系统语言走；英文界面出现之前就在用的安装，升级后仍是中文。想改就到「设置 → 界面语言 · Language」。
+界面有中文和英文两种。新装的程序跟着系统语言走，macOS 首选语言里只要有中文就用中文；英文界面出现之前就在用的安装，升级后仍是中文。想改就点首页标题上方右侧的「中文」或「English」，或者到「设置 → 界面语言 · Language」。
 
 直播中点「换主播」，可以改听另一个主播。点「停止」回到首页，这一场的字幕留在「上一场字幕」里。
 

@@ -424,12 +424,13 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 
 | 位置 | 中文界面 | 英文界面 |
 |---|---|---|
-| 设置行名 | 界面语言 · Language（带上英文，困在中文界面里的英文用户也找得到） | App Language |
+| 设置行名 | 界面语言 · Language（带上英文，困在中文界面里的英文用户也找得到） | App Language · 界面语言（2026-10-29 起对称地带上中文，困在英文界面里的中文用户也找得到。带上的那段是名字：`lang` 是它自己的语言、标 translate="no"，按页面语言二选一露出） |
 | 行右侧摘要 | 跟随系统 · 中文 / 中文 / English | System · English / 中文 / English |
 | 选项 1 | 跟随系统（中文） | System (English) |
 | 选项 2 / 3 | 中文 / English | 中文 / English |
 | 行下方的说明 | 切换后窗口会刷新一次。手机同看页按各自手机的语言显示。 | The window reloads once after you switch. Phone Viewing pages follow each phone’s language. |
-| 「字幕译成」就地提示里的按钮（§3 #21a） | 字：English；aria-label：界面语言改成 English | 字：中文；aria-label：Set App Language to 中文 |
+| 「字幕译成」就地提示里的按钮（§3 #21a） | 字：English | 字：中文 |
+| 首页的两段切换（§3 #33a） | 字：中文 / English；组名（aria-label）：界面语言 | 字：中文 / English；组名：App Language |
 
 语言名永远用该语言自己的写法（中文 / English）。这样用户就算落进一个看不懂的界面，也能认出自己的语言，切回去。
 
@@ -473,7 +474,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 19 | app.js:2240 | 报警开 | Alerts on | 52 → 74（含内边距），见 §4 R6 |
 | 20 | app.js:2262 | 品牌 · {name} | Brand · {name} | 143 → 154 |
 | 21 | index.html:55–62 | 字幕译成（标签 / aria）；title 见 §1 | Captions in | 2026-10-20 由「目标语言 / Translate to」改名。直播中 ≤1080px 时隐藏，首页一直露出；52 → 68（G10 实测，旧的 Translate to 是 74） |
-| 21a | index.html #target-hint、app.js showTargetHint | 正文同 #21 的 title（同一对，不新增句子）；按钮字是那种语言的自称（中文 / English，translate="no"）；按钮 aria-label：界面语言改成 {name} | 正文同 #21 的 title；aria-label：Set App Language to {name} | 2026-10-29 加。英文界面选了中文（简体或繁体）、中文界面选了 English 时，下拉下面弹一次（每页一次，8 秒后自己收起，指针或焦点进去就不再按时收）。按钮只在待机首页给：设置分组在连接中、直播中整块藏着，界面语言只在待机时换。{name} 是语言自称，Title Case 里的 App Language 是设置行的名字（§2.1） |
+| 21a | index.html #target-hint、app.js showTargetHint | 正文同 #21 的 title（同一对，不新增句子）；按钮字是那种语言的自称（中文 / English，translate="no"） | 正文同 #21 的 title；按钮字同左 | 2026-10-29 加。英文界面选了中文（简体或繁体）、中文界面选了 English 时，下拉下面弹一次（每页一次，8 秒后自己收起，指针或焦点进去就不再按时收）。按钮在待机、连接中、直播中都给（用户 10-29 定：直播中设置分组藏着，这是那时唯一的入口；切换只让页面重载一次，不停监听），只有 `--ui-lang` 固定时不给。按钮不另写 aria-label：名字就是自称本身，读屏照按钮的 `lang` 念（aria-label 也会跟着 `lang` 被念成另一种语言的声音，英文页上还多一处中文），提示那句由 aria-describedby 接上。同首页的两段切换（#33a） |
 | 22 | index.html:68–70 | 字幕字号（title / aria） | Caption size | |
 | 23 | index.html:76 | 清空字幕 | **Clear** | 76 → 56。“Clear Captions” 要 114，放不下，见 §4 |
 | 24 | index.html:76 title | 清空历史字幕 | Clear caption history | |
@@ -492,6 +493,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | # | 位置 | 中文 | English | 宽度 / 备注 |
 |---|---|---|---|---|
 | 33 | index.html:298 | 输入 TikTok 直播间地址或 @用户名 | Enter a TikTok Live Link or @username | 232 → 约 330（按字符数估算，未实测），在 600 宽的容器里仍是一行。2026-10-15 并进了原 #34；ⓘ（#35 的按钮）挪到标题右边，同在 `.sp-title` 里居中，不放进 `<h2>`（否则读屏会把「输入说明」念进标题） |
+| 33a | index.html #lang-quick | 中文 / English（两颗按钮的字，语言自称）；组名（aria-label）界面语言 | 中文 / English；组名 App Language | 2026-10-29 加（用户：中文用户困在英文界面里认不出设置里的 App Language）。叠在标题区右上角，和图标同一行，不挤动居中的标题：英文标题约 330px，600 宽的一列里两边各只剩约 100px，并排放不下。按钮字是数据（`lang` 各自的语言、translate="no"），不另写 aria-label，读屏用按钮自己的 `lang` 念。只切中文、英文，「跟随系统」只在设置那一行选；按下的是此刻的界面语言，点它什么都不发。G10 的 home-* 场景量它不压图标、不压标题、不出窗口 |
 | 34 | （已删）标题下面的说明行 | — | — | 2026-10-15 并进 #33；原来是「粘贴直播间链接，或只输入主播用户名（如 @somebody）」 |
 | 35 | index.html:255 title | 输入说明 | About links | |
 | 36 | index.html:268 | https://www.tiktok.com/@主播用户名/live | https://www.tiktok.com/@username/live | 占位文字 |

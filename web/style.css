@@ -688,13 +688,38 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   margin: clamp(32px, 7vh, 72px) auto 48px;
 }
 
-.sp-hero { text-align: center; margin-bottom: 24px; }
+.sp-hero { text-align: center; margin-bottom: 24px; position: relative; }
 /* 中性灰而不是蓝：蓝色只留给「开始翻译」这一个主要动作，引导页大图标
    跟随系统惯例用 labelColor（次级），不是 tintColor */
 .sp-glyph { display: block; width: 44px; height: 44px; margin: 0 auto 12px; color: var(--label-2); }
 .start-panel h2 { font-size: var(--fs-title); line-height: 28px; font-weight: 600; letter-spacing: -0.01em; }
 /* 标题和「输入说明」ⓘ 并排居中。ⓘ 不放进 <h2> 里：它会进标题的无障碍名称，读屏会念成「输入……输入说明」 */
 .sp-title { display: flex; align-items: center; justify-content: center; gap: 2px; }
+/* 界面语言的两段切换（index.html #lang-quick，用户 2026-10-29）：叠在标题区右上角，和图标同一行高，
+   不挤动居中的图标和标题——600px 一列里英文标题两边各只剩约 100px，和标题并排放不下。
+   样子同 macOS 的分段控件：灰底槽，按下的那段白底浮起、字加粗。窗口最窄 420px 时一列约 388px，
+   图标在正中约 44px 宽，切换约 130px 宽贴右，碰不到（G10 的 home-* 场景量 720–1000px） */
+.lang-quick {
+  position: absolute; top: 0; right: 0;
+  display: inline-flex; gap: 2px; padding: 2px;
+  border-radius: var(--r-control); background: var(--fill);
+}
+.lang-quick-btn {
+  min-width: 52px; height: var(--h-small); padding: 0 10px;
+  border: none; border-radius: 6px; background: transparent;
+  font-family: inherit; font-size: var(--fs-callout); color: var(--label-2);
+  cursor: pointer;
+}
+.lang-quick-btn:hover { color: var(--label); }
+.lang-quick-btn[aria-pressed="true"] {
+  background: var(--card); color: var(--label); font-weight: 600; box-shadow: var(--ring); cursor: default;
+}
+.lang-quick-btn:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); }
+.lang-quick-btn:disabled { opacity: 0.4; cursor: default; }
+/* 设置行名里带上的另一种语言名（index.html #lang-head）：中文页露 Language，英文页露「界面语言」。
+   分成两条写：英文专属的规则不和别的选择器并在一个列表里（tests/test_i18n_layout_css.py） */
+html[lang="en"] .zh-page-only { display: none; }
+html:not([lang="en"]) .en-page-only { display: none; }
 
 /* 展开原来那两段灰字（#input-help）；图标用 SF Symbols「info.circle」而不是
    圆圈问号——后者更像第三方网页产品的帮助气泡，不是苹果系统的「更多信息」惯用语。
