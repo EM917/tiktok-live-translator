@@ -76,6 +76,51 @@ TRANSLATOR_CHOICES = ["auto", "hymt2", "hymt2-7b", "gemma",
 ENGINE_KEY_ENV = {"deepl": "DEEPL_API_KEY", "claude": "ANTHROPIC_API_KEY",
                   "openai": "OPENAI_API_KEY"}
 
+# Anthropic 的工作区 ID（wrkspc_ 开头）。新版 Claude Console 里建密钥时可以不选工作区，这种密钥的每个请求
+# 都要带 anthropic-workspace-id 头，不带就 400（2026-10-29 用户实测）。和密钥存在同一处（api_keys 里的同名字段），
+# 取法也同 api_key：环境变量优先。它不是密钥，界面上照原样显示；但也不写进审计
+WORKSPACE_ENV = "ANTHROPIC_WORKSPACE_ID"
+WORKSPACE_HEADER = "anthropic-workspace-id"
+WORKSPACE_ID_RE = re.compile(r"wrkspc_[A-Za-z0-9_-]+")
+
+
+def anthropic_workspace():
+    """填了的工作区 ID，没填返回 None。"""
+    return api_key(WORKSPACE_ENV)
+
+
+def workspace_missing(translator, said):
+    """这一次 400 是不是接口在说「这把密钥没绑工作区，请求里要带工作区 ID」。
+
+    只认这一种：Claude 引擎、请求里**没带**工作区 ID、原话（_error_summary 的 "type: message"）是
+    invalid_request_error 且点了这个请求头的名字。带了工作区 ID 还 400 的，照旧照抄原话——ID 填错了还是别的
+    什么，接口没说，不替它说。重译实例叫 strong，所以认类也认名字（engine_is_claude）。"""
+    inner = getattr(translator, "inner", translator)
+    if not engine_is_claude(inner) or getattr(inner, "workspace_id", None):
+        return False
+    return says_workspace_missing(said)
+
+
+def says_workspace_missing(said):
+    """只看原话那一半（workspace_missing 去掉「是不是 Claude、带没带工作区 ID」两条）：弹幕留意的复核后端
+    不是 ClaudeTranslator，自己判断带没带。"""
+    text = str(said or "").lower()
+    return text.startswith("invalid_request_error") and WORKSPACE_HEADER in text
+
+
+# 「密钥没绑工作区」那种 400 在界面上的说法（重译、弹幕重译的失败提示里代替接口原话；横幅另有一整句）
+WORKSPACE_MISSING_SAID = L("Anthropic 说这把密钥没有绑定工作区，请求里要带工作区 ID",
+                           "Anthropic says this API key isn’t scoped to a workspace, so requests need a "
+                           "workspace ID")
+
+
+def said_for_ui(translator, said):
+    """last_error 里接口原话给界面看的样子：「密钥没绑工作区」换成成对的一句，其余照抄（去掉末尾句号）。
+    审计和终端仍写原话。"""
+    if workspace_missing(translator, said):
+        return WORKSPACE_MISSING_SAID
+    return str(said).rstrip(" .。")  # i18n: data（接口原话）
+
 # 提示文字里称呼引擎用的名字（与页面「翻译引擎」下拉框一致）。"auto" 也收进来——
 # 界面上不出现内部代号，回退提示（restore_engine）说「本次先用自动」而不是
 # 「本次先用 auto」，跟违禁词/直播排障那条「不猜原因」的规矩是同一类要求：
@@ -875,6 +920,8 @@ class ClaudeTranslator(BaseTranslator):
         if not self.api_key:
             raise RuntimeError(L("还没有填 Claude 密钥——在「设置 > 翻译引擎」里填一次即可",
                                  "No Claude API key yet. Enter it once in Settings > Translation Engine."))
+        # 不绑工作区的密钥要带的工作区 ID（见 WORKSPACE_ENV），构造时读一次：界面改了它会新建引擎（set_engine）
+        self.workspace_id = anthropic_workspace()
         self.model = ((model or "").strip()
                       or (os.environ.get("CLAUDE_TRANSLATE_MODEL") or "").strip()
                       or self.DEFAULT_MODEL)
@@ -890,10 +937,21 @@ class ClaudeTranslator(BaseTranslator):
 
     # 自检探针查的是这个模型本身：模型下线时回 404，而不只是验密钥
     PROBE_CHECKS_MODEL = True
+    # 没走 __init__ 的对象（测试里的替身）也有这两个：不带工作区 ID，探针没见过「没绑工作区」
+    workspace_id = None
+    probe_workspace_missing = False
+
+    @classmethod
+    def auth_headers(cls, key, workspace=None):
+        """Anthropic 请求都带的头：密钥、接口版本，填了工作区 ID 时再加 anthropic-workspace-id（没填就不带，
+        绑了工作区的密钥一字不变）。弹幕留意的复核（app/comment_review.py）也用这一份。"""
+        headers = {"x-api-key": key, "anthropic-version": cls.API_VERSION}
+        if workspace:
+            headers[WORKSPACE_HEADER] = workspace
+        return headers
 
     def _headers(self):
-        return {"x-api-key": self.api_key, "anthropic-version": self.API_VERSION,
-                "content-type": "application/json"}
+        return {**self.auth_headers(self.api_key, self.workspace_id), "content-type": "application/json"}
 
     @property
     def hint_without_notes(self):
@@ -997,13 +1055,16 @@ class ClaudeTranslator(BaseTranslator):
 
     async def probe_key(self):
         """不花 token 的探针：GET /v1/models/{模型}，返回 HTTP 状态码。
-        连不上时抛异常，由调用方处理（自检那边限时 5 秒）。"""
+        连不上时抛异常，由调用方处理（自检那边限时 5 秒）。回 400 时顺带看一眼是不是「密钥没绑工作区」，
+        记在 probe_workspace_missing 上（只记这一个是或否，不留原话）。"""
         from urllib.parse import quote
 
-        headers = {"x-api-key": self.api_key, "anthropic-version": self.API_VERSION}
         url = self.URL.rsplit("/", 1)[0] + "/models/" + quote(self.model, safe="")
+        self.probe_workspace_missing = False
         session = await self.session()
-        async with session.get(url, headers=headers) as resp:
+        async with session.get(url, headers=self.auth_headers(self.api_key, self.workspace_id)) as resp:
+            if resp.status == 400:
+                self.probe_workspace_missing = workspace_missing(self, await self._error_summary(resp))
             return resp.status
 
     async def translate(self, text, target, source="auto", glossary=None):

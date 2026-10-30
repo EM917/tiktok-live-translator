@@ -80,6 +80,8 @@
   var commentJump = document.getElementById("comment-jump");
   var engineSelect = document.getElementById("engine-select");
   var engineKey = document.getElementById("engine-key");
+  var engineWorkspaceRow = document.getElementById("engine-workspace-row");
+  var engineWorkspace = document.getElementById("engine-workspace");
   var engineSave = document.getElementById("engine-save");
   var engineActive = document.getElementById("engine-active");
   var engineNote = document.getElementById("engine-note");
@@ -3234,10 +3236,59 @@
       delete incidents[msg.id];
     } else {
       incidents[msg.id] = { level: msg.level || "warn", text: msg.text || "",
-                            since: msg.since || msg.ts || 0, ts: msg.ts };
+                            since: msg.since || msg.ts || 0, ts: msg.ts, recheck: !!msg.recheck };
     }
     drawIncidents();
   }
+
+  // 「我加好了，再查一次」（app/pipeline.py _recheck_browser_login）：「没有读到 TikTok 登录」那条在系统拒绝读取时带
+  // recheck，自检「浏览器登录态」那一行带「完全磁盘访问权限」那几步时也带（app/selfcheck.py _browser_login_row）。
+  // 2026-10-29 新 Mac 上，中控照着做完以后，点「开始翻译」之前没有任何地方告诉他成没成。点了让后端当场重看一次，
+  // 结果走 notice；页面上有这个按钮时，从系统设置切回窗口（先离开、再回来）也自动发一次，两次之间至少隔
+  // RECHECK_GAP_MS。自动发的带 auto：结果和上一次一样，后端就不再发 notice
+  var RECHECK_GAP_MS = 5000;
+  var lastRecheckAt = -Infinity;
+  var scRecheckShown = false;          // 自检那一行此刻带不带这个按钮（renderSelfcheck 记下）
+  var leftWithRecheck = false;         // 按钮在页面上时离开过窗口：回来时自动重查一次
+
+  function sendRecheck(auto) {
+    var msg = { type: "recheck_browser_login" };
+    if (auto) msg.auto = true;
+    if (!send(msg)) return false;
+    lastRecheckAt = Date.now();
+    return true;
+  }
+
+  function recheckButton(cls) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = cls;
+    btn.textContent = L("我加好了，再查一次", "Check Again");
+    btn.addEventListener("click", function () { sendRecheck(false); });
+    return btn;
+  }
+
+  function recheckOnPage() {
+    for (var k in incidents) if (incidents[k].recheck) return true;
+    return scRecheckShown;
+  }
+
+  function leaveWindow() {
+    if (recheckOnPage()) leftWithRecheck = true;
+  }
+
+  function backToWindow() {
+    if (!leftWithRecheck || !recheckOnPage()) return;
+    if (Date.now() - lastRecheckAt < RECHECK_GAP_MS) return;
+    if (sendRecheck(true)) leftWithRecheck = false;
+  }
+
+  window.addEventListener("blur", leaveWindow);
+  window.addEventListener("focus", backToWindow);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") leaveWindow();
+    else backToWindow();
+  });
 
   // 带上看到的那一条的 ts：这期间又跳了一次的话服务端不收，新的那次中控还没看到。
   // 发出去了才先在本页收起（等服务端的 clear 回来也是同样的结果）；连接断着时发不出去，
@@ -3252,7 +3303,7 @@
 
   // 超过 3 行的持续提示默认只露第一行，行尾跟「显示全部步骤」，和状态横幅同一个做法（U10，BANNER_FOLD_LINES）。
   // 眼下只有「没有读到 TikTok 登录」带完全磁盘访问权限那几步的那种（app/browser_login.py no_login_notice，第一行是
-  // 看到了什么、影响哪类直播间、在 Safari 里登录）：它读到登录之前一直挂在顶部、直播中也在，全展开 1000 宽下
+  // 登录优先那一步看到了什么、授权那几步的头一句）：它读到登录之前一直挂在顶部、直播中也在，全展开 1000 宽下
   // 八九行（审查第 1 轮）。持续提示每变一条整排重画：展开与否按 id 记、连同那段文字，重画时保留，文字变了重新
   // 折起来。按钮就地切换，不重画（键盘焦点留在按钮上）
   var incidentOpen = Object.create(null);   // id → 展开时的那段文字
@@ -3303,6 +3354,11 @@
       var text = stripStatusEmoji(incidents[k].text);
       setIconText(row, barIconFor(level), text);
       foldIncident(row.lastChild, k, text);
+      if (incidents[k].recheck) {
+        // 接在第一行的字（和「显示全部步骤」）后面：折着时也看得见
+        var span = row.lastChild;
+        span.insertBefore(recheckButton("incident-recheck"), span.querySelector(".incident-rest"));
+      }
       if (DISMISSABLE_INCIDENTS.indexOf(k) !== -1) {
         row.classList.add("dismissible");
         var closeBtn = document.createElement("button");
@@ -4359,6 +4415,7 @@
 
   function renderSelfcheck(msg) {
     if (!scBox || !msg.checks) return;
+    scRecheckShown = msg.checks.some(function (c) { return !!c.recheck; });
     var sum = msg.summary || {};
     scBox.classList.remove("hidden");
     scHead.classList.toggle("has-fail", sum.fail > 0);
@@ -4395,6 +4452,7 @@
         var fix = document.createElement("span");
         fix.className = "sc-fix";
         fix.textContent = c.fix;   // 不再拼「→」：这不是链接，没法点（designer.md #1）
+        if (c.recheck) fix.appendChild(recheckButton("btn small sc-recheck"));   // 「我加好了，再查一次」，在那几步下面
         detail.appendChild(fix);
       }
       if (c.action === "download_asr_model") {
@@ -4652,6 +4710,9 @@
     none: L("只显示识别原文，不翻译。", "Shows the original text without translating.")
   };
   var engineKeys = {};
+  var engineWorkspaceId = "";   // 在用的 Claude 工作区 ID（不是密钥，服务端照原样给；没填是空串）
+  // 工作区 ID 的样子（app/translator.py WORKSPACE_ID_RE）：不像就不发，免得刚粘贴的密钥跟着白填
+  var WORKSPACE_ID_RE = /^wrkspc_[A-Za-z0-9_-]+$/;
   var engineNoteSig = null;   // 上一次的回退提示；变了才自动展开，重连回放不反复弹开
 
   // 引擎被回退时摘要前面加的小三角（跟 .sc-icon 同一套线性画法，颜色固定橙——
@@ -4666,6 +4727,7 @@
   function renderEngine(info) {
     if (!engineSelect) return;
     engineKeys = info.keys || {};
+    engineWorkspaceId = typeof info.workspace_id === "string" ? info.workspace_id : "";
     engineSelect.value = info.engine || "auto";
     commentRedoEngine = info.active || "";
     syncAllCommentRedo();     // 字幕引擎换了：已经画出来的「重译」按钮跟着变灰或可点
@@ -4717,6 +4779,10 @@
       engineKey.placeholder = have ? L("已填 " + have + "（留空则沿用）", "Saved key " + have + " (leave blank to keep)")
                                    : L("粘贴 API 密钥", "Paste API key");
     }
+    // 工作区 ID 只有 Claude 要（不绑工作区的密钥）：选别的引擎时收起，框里回到在用的那个
+    var claude = engineSelect.value === "claude";
+    if (engineWorkspaceRow) engineWorkspaceRow.classList.toggle("hidden", !claude);
+    if (engineWorkspace) engineWorkspace.value = engineWorkspaceId;
     // 字幕会发到外部服务的几档：前面加三角图标（以前是 ⚠️ 前缀），颜色仍由 .warn 给
     var sendsOut = engineSelect.value in KEY_ENV || engineSelect.value === "google";
     if (sendsOut) setIconText(engineNote, "warn", NOTES[engineSelect.value] || "");
@@ -4727,10 +4793,24 @@
   if (engineSelect) {
     engineSelect.addEventListener("change", syncEngineRow);
     engineSave.addEventListener("click", function () {
+      var claude = engineSelect.value === "claude";
+      var workspace = claude && engineWorkspace ? engineWorkspace.value.trim() : null;
+      if (workspace && !WORKSPACE_ID_RE.test(workspace)) {
+        // 和服务端那句同一句（app/pipeline.py set_engine）：服务端也会拦，这里先拦是为了不清掉密钥框
+        setIconText(engineNote, "warn", L("工作区 ID 是 wrkspc_ 开头的一串字母和数字（Claude Console 的 Workspaces 页面上有），" +
+                                          "这次没有保存，请检查后再点「保存」",
+                                          "A workspace ID starts with wrkspc_ followed by letters and numbers. It’s listed on " +
+                                          "the Workspaces page in the Claude Console. Nothing was saved. Check it and click " +
+                                          "Save again."));
+        engineNote.classList.add("warn");
+        return;
+      }
       engineSave.disabled = true;
       engineSave.textContent = L("切换中…", "Switching…");
-      send({ type: "set_engine", engine: engineSelect.value,
-             api_key: engineKey.value || null });
+      var msg = { type: "set_engine", engine: engineSelect.value,
+                  api_key: engineKey.value || null };
+      if (claude) msg.workspace_id = workspace;
+      send(msg);
       engineKey.value = "";
       setTimeout(function () {
         engineSave.disabled = false;
