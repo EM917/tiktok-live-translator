@@ -665,15 +665,52 @@ def recheck_notice(first, terminal=None):
 def browser_only_advice(login):
     """解析以 kind=browser_only 收场时，附在固定话术后面的那一段：两个借登录的层
     看到了什么、对应能做什么。没有观察（没试浏览器）返回空串。"""
+    return lookup_advice(login)
+
+
+def fda_needed(login, first=None):
+    """解析以 kind=browser_only 收场的那段话里带不带「完全磁盘访问权限」那几步。pipeline._fda_paths 按同一个判断
+    决定状态里带不带要加的路径：话里有那一步，页面才有地方放可复制的路径行。
+
+    系统拒绝读取（BLOCKED）了某个浏览器、又一个登录都没借到：带（一直如此）。借到了别的浏览器的登录（OK）：只在
+    登录优先那一步要读的浏览器（first，resolver._login_first_browsers）被拒时带。2026-10-29 新 Mac 上那三次解析：
+    登录优先那一层三次都没读到 Safari（系统拒绝读取），后面几层借到了 Chrome 的登录，话里却只说「已借用 Chrome 的
+    登录再试」，Safari 没读到这件事一个字没有；Safari 有了权限之后，同一房间第一层 791 毫秒就拿到了（一次观察，
+    不写成原因）。被拒的只是后面几层才读的浏览器、登录优先那一步读到了：不带，那几步帮不上这一步。first 不知道
+    （None）时只要有被拒的就带。"""
+    login = {b: c for b, c in (login or {}).items() if c != NOT_READ}
+    blocked = [b for b, c in login.items() if c == BLOCKED]
+    if not blocked:
+        return False
+    if OK not in login.values() or first is None:
+        return True
+    return any(b in first for b in blocked)
+
+
+_BORROWED = L("已借用 {} 里的 TikTok 登录再试，TikTok 仍然没有给出流地址。",
+              "Tried again with the TikTok sign-in from {}. TikTok still didn’t provide a stream URL.")
+
+
+def lookup_advice(login, first=None):
+    """browser_only_advice 的那一段，多知道一件事：first 是登录优先那一步要读的浏览器
+    （resolver._login_first_browsers，见 fda_needed），pipeline.browser_only_message 收场时给；不知道是 None。
+    借到了别的浏览器的登录、而 first 里的浏览器被系统拒绝读取时，照样留着它的观察和完全磁盘访问权限那几步。"""
     login = {b: c for b, c in (login or {}).items() if c != NOT_READ}
     if not login:
         return ""
     borrowed = [b for b, c in login.items() if c == OK]
-    # 英文开头留空格：这一段夹在 pipeline.browser_only_message 的两句之间，前一句以句号结尾
     if borrowed:
-        return L("已借用 {} 里的 TikTok 登录再试，TikTok 仍然没有给出流地址。",
-                 " Tried again with the TikTok sign-in from {}. TikTok still didn’t provide a "
-                 "stream URL.").format(L("、", ", ").join(label(b) for b in borrowed))
+        head = _BORROWED.format(L("、", ", ").join(label(b) for b in borrowed))
+        if not fda_needed(login, first):
+            # 英文开头留空格：这一段夹在 pipeline.browser_only_message 的两句之间，前一句以句号结尾
+            return _space_before(head)
+        # 借到了，可登录优先那一步要读的浏览器被系统拒绝读取：照实留着它的观察和完全磁盘访问权限那几步（分行，
+        # 前后都换行，同下面没借到时的写法）。只写看到的，不写「所以」
+        blocked = {b: c for b, c in login.items() if c == BLOCKED}
+        seen = L("借用浏览器里的 TikTok 登录时观察到——{}。",
+                 "Looked for a TikTok sign-in in your browsers. {}.").format(observed_text(blocked))
+        return _after_lead(head + _space_before(seen) + L("\n", "\n") + steps_text(blocked, lines=True)
+                           + L("\n", "\n"))
     # 英文只说「找过」：观察里可能一个登录都没读到。步骤为空（比如只有 READABLE）时英文不留尾部空格。
     # 步骤分了行（带「完全磁盘访问权限」那几步）时，观察那句和步骤之间也另起一行，最后也换行：pipeline 接在
     # 后面的「想现在就看：粘 .flv」是另一件事，接在权限范围或「在 Chrome 里登录」后面读起来像是同一件事（审查

@@ -9,8 +9,8 @@
 | 组成 | 体积 | 何时下载 |
 |---|---|---|
 | 运行环境（`.venv`） | 1.4 GB | 首次启动 |
-| 语音模型 `large-v3`（Apple Silicon GPU / CUDA） | 2.9 GB | 首次识别 |
-| 语音模型 `large-v3-turbo`（CPU 路径） | 1.5 GB | 首次识别 |
+| 语音模型 `large-v3`（Apple Silicon GPU / CUDA） | 2.9 GB | 首次识别，或在启动自检里点「现在下载」 |
+| 语音模型 `large-v3-turbo`（CPU 路径） | 1.5 GB | 首次识别，或在启动自检里点「现在下载」 |
 | Ollama 程序本身 | 0.2 GB | 手动安装一次 |
 | 翻译模型 Hy-MT2 1.8B | 1.1 GB | 装好 Ollama 后由程序自动下载 |
 | 翻译模型 Hy-MT2 7B（可选） | 4.6 GB | 仅在你主动拉取时 |
