@@ -74,8 +74,12 @@ def bare_pipeline():
     return p
 
 
+# 闪购助手 0.10.0 起的名字（带空格）；旧名字「闪购助手.app」的那几条在 tests/test_flash_find.py、tests/test_flash_sale.py
+APP = "Flash Sale Helper.app"
+
+
 def installed_app(tmp_path):
-    app = tmp_path / "Applications" / fs.APP_NAME
+    app = tmp_path / "Applications" / APP
     app.mkdir(parents=True)
     return app
 
@@ -168,12 +172,12 @@ def test_on_macos_without_the_app_the_feature_does_not_exist(tmp_path, capsys):
     async def nobody(url):
         return "unreachable", None
     p._flash_fetch = nobody
-    asyncio.run(p.attach_flash_sale(platform="darwin", candidates=[tmp_path / fs.APP_NAME]))
+    asyncio.run(p.attach_flash_sale(platform="darwin", candidates=[tmp_path / APP]))
     assert "flash_sale" not in p.server.config and p._flash_task is None
     assert p.handle_control({"type": "open_flash_helper"}) is None and not p._bg_tasks
     assert out_lines(capsys) == [
-        "[信息] 闪购助手：没找到 {}（找过 {}）。装在别处的话，可以把完整路径写进 settings.json 的 flash_sale.app_path"
-        .format(fs.APP_NAME, tmp_path / fs.APP_NAME)]
+        "[信息] 闪购助手：没找到 Flash Sale Helper.app 或 闪购助手.app（找过 {}）。装在别处的话，可以把完整路径写进 "
+        "settings.json 的 flash_sale.app_path".format(tmp_path / APP)]
 
 
 def test_installed_the_first_hello_already_says_checking(tmp_path, capsys):
@@ -182,7 +186,7 @@ def test_installed_the_first_hello_already_says_checking(tmp_path, capsys):
     script = Script(p, [sample("running")])
 
     async def go():
-        await p.attach_flash_sale(platform="darwin", candidates=[tmp_path / "nope" / fs.APP_NAME, app])
+        await p.attach_flash_sale(platform="darwin", candidates=[tmp_path / "nope" / APP, app])
         # 第一次轮询之前，config 里已经有这个键：第一次 hello 就带着，按钮不会晚一拍冒出来
         assert p.server.config["flash_sale"] == dict(fs.empty_state("checking"), app_found=True)
         assert p._flash_app == app and p._flash_task is not None
@@ -208,7 +212,7 @@ def test_the_page_learns_from_hello_whether_the_start_gate_is_open(gate, monkeyp
     async def nobody(url):
         return "unreachable", None
     p._flash_fetch = nobody
-    asyncio.run(p.attach_flash_sale(platform="darwin", candidates=[tmp_path / "nope" / fs.APP_NAME]))
+    asyncio.run(p.attach_flash_sale(platform="darwin", candidates=[tmp_path / "nope" / APP]))
     assert "flash_start_enabled" not in p.server.config
     p.stop_flash_watch()
     Script(p, [sample("idle")])
@@ -482,6 +486,25 @@ def test_open_runs_open_a_with_the_full_path_and_speeds_up_polling(tmp_path, cap
     clock["mono"] += 0.2
     assert p._flash_interval() == fs.POLL_DOWN_SEC
     assert out_lines(capsys) == ["[信息] 闪购助手：执行 open -a {}".format(p._flash_app)]
+
+
+def test_open_gets_the_path_with_spaces_as_one_argv_element_and_no_shell(tmp_path, monkeypatch, capsys):
+    """不注入 _flash_exec，走缺省的 asyncio.create_subprocess_exec（换成记账的替身，不真的执行）：完整路径是 argv 里的
+    一个元素，「Flash Sale Helper.app」和上一级目录里的空格原样留着；绝不经 shell。"""
+    app = tmp_path / "My Apps" / APP
+    app.mkdir(parents=True)
+    exe = FakeExec(rc=0)
+
+    async def no_shell(*args, **kwargs):
+        raise AssertionError("open 不经 shell")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exe)
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", no_shell)
+    p, _clock = opening_pipeline(tmp_path, None)
+    p._flash_app = app
+    click(p)
+    (argv, _kwargs), = exe.calls
+    assert list(argv) == ["open", "-a", str(app)] and " " in argv[2]
+    assert out_lines(capsys) == ["[信息] 闪购助手：执行 open -a {}".format(app)]
 
 
 def test_the_page_cannot_put_anything_into_argv(tmp_path):

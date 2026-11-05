@@ -4,8 +4,9 @@
 
 只在 macOS 上才有：main.py 在第一次 hello 之前调 attach_flash_sale，接上了才往 server.config 里写 flash_sale
 这个键、起轮询；接不上就连这个键都没有，页面据此不画按钮（同浮窗的 float_window）。接得上的有两种：
-- 找到了闪购助手.app（flash_sale.find_app：settings.json 的 flash_sale.app_path 指定的位置优先，再看 /Applications、
-  ~/Applications；直播助手平台轮廓 §7.2 第 2 步）；
+- 找到了闪购助手的 .app（flash_sale.find_app：settings.json 的 flash_sale.app_path 指定的位置优先，再看 /Applications、
+  ~/Applications，先新名字 Flash Sale Helper.app、再旧名字 闪购助手.app，见 flash_sale.APP_NAMES；直播助手平台轮廓
+  §7.2 第 2 步）；
 - 没找到，但启动时当场读一次 9334 的 /status，回话像闪购助手的（flash_sale.status_refusal，launch-7 用户选 B）：
   照样有按钮、能看能停，只是没有「打开闪购助手」。推给页面的状态里 app_found 说是哪一种。
 没找到时终端一行（双击 .app 启动时进运行日志）。打开浮层时页面发 flash_find，这里再找一次（只看文件系统），
@@ -53,11 +54,13 @@ _CTL_OUTCOMES = {"no_status": "没有发出", "no_token": "没有发出", "unrea
                  "no_answer": "没有回话", "bad_reply": "回话读不出", "failed": "出错",
                  "local_only": "没有发出", "not_confirmed": "没有发出"}   # i18n: terminal
 _CTL_REFUSED = "没有接受"   # i18n: terminal
-# settings.json 里指定的位置用不了（flash_sale.configured_app 的原因代码）：终端一行，同一种只打一次
+# settings.json 里指定的位置用不了（flash_sale.configured_app 的原因代码）：终端一行，同一种只打一次。
+# wrong_name 那一句写的是 flash_sale.APP_NAMES 的两个名字（新名字在前）
 _CFG_PROBLEMS = {
     "bad_value": "[警告] 闪购助手：settings.json 的 flash_sale.app_path 不是一个路径，没用它",
     "not_absolute": "[警告] 闪购助手：settings.json 的 flash_sale.app_path 不是完整路径，没用它",
-    "wrong_name": "[警告] 闪购助手：settings.json 的 flash_sale.app_path 指的不是 {}，没用它".format(flash_sale.APP_NAME),
+    "wrong_name": "[警告] 闪购助手：settings.json 的 flash_sale.app_path 指的不是 {}，也不是 {}，没用它".format(
+        *flash_sale.APP_NAMES),
 }
 
 
@@ -162,9 +165,10 @@ class FlashSaleMixin:
         return app, looked
 
     def _flash_log_missing(self, looked):
-        """没找到 .app：终端一行（双击 .app 启动时进运行日志），列出看过哪几处、本机指定位置写在哪个键里。"""
-        print("[信息] 闪购助手：没找到 {}（找过 {}）。装在别处的话，可以把完整路径写进 settings.json 的 flash_sale.app_path"
-              .format(flash_sale.APP_NAME, "、".join(str(p) for p in looked)))
+        """没找到 .app：终端一行（双击 .app 启动时进运行日志），说两个名字都找过（flash_sale.APP_NAMES，新名字在前），
+        列出按先后看过哪几处、本机指定位置写在哪个键里。"""
+        print("[信息] 闪购助手：没找到 {} 或 {}（找过 {}）。装在别处的话，可以把完整路径写进 settings.json 的 "
+              "flash_sale.app_path".format(*flash_sale.APP_NAMES, "、".join(str(p) for p in looked)))
 
     def _flash_find(self):
         """控制页打开闪购浮层时发的 flash_find（handle_control 调，同步）：再找一次 .app，装完、挪完、改了 settings.json

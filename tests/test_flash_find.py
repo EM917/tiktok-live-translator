@@ -1,7 +1,8 @@
 """找得到闪购助手（直播助手平台轮廓 §7.2 第 2 步）和两个新用户问题 launch-7、launch-8：
 
-- 本机指定的位置：settings.json 的 flash_sale.app_path（§5.2「本机指定位置」：只认完整路径、名字是 闪购助手.app 的）。
-  指定的优先；不存在就不用，接着看 /Applications、~/Applications；
+- 两个名字：闪购助手 0.10.0 起装成 Flash Sale Helper.app，旧版装的 闪购助手.app 下一次安装时挪走。两个都认，新名字在前；
+- 本机指定的位置：settings.json 的 flash_sale.app_path（§5.2「本机指定位置」：只认完整路径、名字是这两个之一的）。
+  指定的优先；不存在就不用，接着看 /Applications、~/Applications（先新名字、再旧名字）；
 - 没找到时终端一行（双击 .app 启动时它进运行日志）；
 - launch-7（用户选 B）：没找到 .app，但启动时 9334 上的 /status 像闪购助手的回话，照样有「闪购」按钮，只是没有
   「打开闪购助手」（推给页面的状态里 app_found 是 false）；
@@ -15,16 +16,21 @@ import asyncio
 import contextlib
 import json
 import os
+import re
+import unicodedata
+from pathlib import Path
 
 import pytest
 
 from app import flash_sale as fs
 from app import i18n, settings
 from app.i18n import CJK
+from tests.test_flash_sale import laid_out
 from tests.test_pipeline_flash import (FAKE_TOKEN, Done, FakeExec, FakePost, FakeToken, Script, bare_pipeline, click,
                                        control_pipeline, installed_app, opening_pipeline, out_lines, poll, sample)
 
-APP = fs.APP_NAME
+NEW, OLD = "Flash Sale Helper.app", "闪购助手.app"
+APP = NEW
 ENV_HOME = "USERPROFILE" if os.name == "nt" else "HOME"
 
 
@@ -37,8 +43,8 @@ def write_settings(data):
 
 
 def not_found_line(*paths):
-    return ("[信息] 闪购助手：没找到 {}（找过 {}）。装在别处的话，可以把完整路径写进 settings.json 的 "
-            "flash_sale.app_path").format(APP, "、".join(str(p) for p in paths))
+    return ("[信息] 闪购助手：没找到 Flash Sale Helper.app 或 闪购助手.app（找过 {}）。装在别处的话，可以把完整路径写进 "
+            "settings.json 的 flash_sale.app_path").format("、".join(str(p) for p in paths))
 
 
 def fake_fetch(result):
@@ -86,15 +92,33 @@ def test_nothing_configured(data):
     assert fs.configured_app(data) == (None, None)
 
 
-def test_a_full_path_to_the_app_is_used_as_is(tmp_path):
-    path = tmp_path / "Desktop" / "闪购助手" / APP
+@pytest.mark.parametrize("name", [NEW, OLD])
+def test_a_full_path_to_the_app_is_used_as_is(name, tmp_path):
+    path = tmp_path / "Desktop" / "My Tools" / name
     assert fs.configured_app(saved(str(path))) == (path, None)
     assert fs.configured_app(saved(str(path) + os.sep)) == (path, None)        # 结尾带斜杠也认
 
 
-def test_a_home_relative_path_is_expanded(tmp_path, monkeypatch):
+@pytest.mark.parametrize("name", [NEW, OLD])
+def test_a_home_relative_path_is_expanded(name, tmp_path, monkeypatch):
     monkeypatch.setenv(ENV_HOME, str(tmp_path))
-    assert fs.configured_app(saved("~/Desktop/" + APP)) == (tmp_path / "Desktop" / APP, None)
+    assert fs.configured_app(saved("~/Desktop/" + name)) == (tmp_path / "Desktop" / name, None)
+    assert fs.configured_app(saved("~/Applications/" + name)) == (tmp_path / "Applications" / name, None)
+
+
+@pytest.mark.parametrize("name", [NEW, OLD])
+def test_a_decomposed_name_is_still_the_helper(name, tmp_path):
+    """访达、终端里拷出来的路径可能是 NFD（分解形式）：比之前两边都规整成 NFC。这两个名字里没有能分解的字
+    （英文是 ASCII，「闪购助手」四个字也没有分解形式），NFD 就是原样；规整这一步本身下面那条用带重音的替身名字钉着。"""
+    value = unicodedata.normalize("NFD", str(tmp_path / name))
+    assert fs.configured_app(saved(value)) == (Path(value), None)
+
+
+def test_names_are_compared_after_normalizing_both_sides(tmp_path, monkeypatch):
+    monkeypatch.setattr(fs, "APP_NAMES", ("Caf\u00e9 Helper.app",))                  # é 是一个码位（NFC）
+    decomposed = tmp_path / "Cafe\u0301 Helper.app"                                   # e + 组合重音（NFD）
+    assert fs.configured_app(saved(str(decomposed))) == (decomposed, None)
+    assert fs.configured_app(saved(str(tmp_path / "Cafe Helper.app"))) == (None, "wrong_name")
 
 
 @pytest.mark.parametrize("value, problem", [
@@ -116,9 +140,16 @@ def test_a_path_with_a_nul_or_far_too_long_is_not_used(tmp_path):
     assert fs.configured_app(saved(long)) == (None, "bad_value")
 
 
-@pytest.mark.parametrize("name", ["闪购助手 2.app", "Other.app", "闪购助手", APP + ".zip", "闪购助手.APP"])
+@pytest.mark.parametrize("name", [
+    "闪购助手 2.app", "Flash Sale Helper 2.app",                         # iCloud 桌面上整文件夹替换留下的副本
+    "Other.app", "闪购助手", "Flash Sale Helper", OLD + ".zip", NEW + ".zip",
+    "FlashSaleHelper.app", "Flash  Sale Helper.app", "Flash Sale Helper.app ", "Flash-Sale-Helper.app",
+    # 大小写要对上（原来的规则就是这样：「闪购助手.APP」不认）
+    "闪购助手.APP", "flash sale helper.app", "FLASH SALE HELPER.app", "Flash Sale Helper.APP", "Flash sale helper.app",
+])
 def test_only_the_helper_by_name_is_used(name, tmp_path):
-    """§5.2：只认名字对得上的 .app。iCloud 桌面上整文件夹替换留下的「闪购助手 2.app」也不认。"""
+    """§5.2：只认名字对得上的 .app（两个名字之一，大小写也要一样）。iCloud 桌面上整文件夹替换留下的「闪购助手 2.app」
+    「Flash Sale Helper 2.app」也不认：双击到旧的那份，同传显示的版本就和在跑的对不上。"""
     assert fs.configured_app(saved(str(tmp_path / name))) == (None, "wrong_name")
 
 
@@ -289,6 +320,51 @@ def test_found_states_say_app_found(tmp_path):
     assert p._flash_on and p._flash_app == app
 
 
+@pytest.mark.parametrize("installed, expected", [
+    (("new-system",), "new-system"), (("new-home",), "new-home"),
+    (("old-system",), "old-system"), (("old-home",), "old-home"),
+    (("new-system", "old-system"), "new-system"),
+    (("new-home", "old-system"), "new-home"),             # 新名字在 ~/Applications 也比旧名字在 /Applications 先
+    (("new-home", "old-home", "old-system"), "new-home"),
+])
+def test_either_name_is_found_and_the_new_one_wins_and_is_what_open_gets(installed, expected, tmp_path, capsys):
+    candidates, system, home = laid_out(tmp_path)
+    where = {"new-system": system / NEW, "new-home": home / NEW, "old-system": system / OLD, "old-home": home / OLD}
+    for key in installed:
+        where[key].mkdir(parents=True)
+    p = bare_pipeline()
+    attach(p, candidates)
+    assert p._flash_app == where[expected]
+    assert p.server.config["flash_sale"]["app_found"] is True
+    assert out_lines(capsys) == ["[信息] 闪购助手：已装，开始查看 127.0.0.1:9 的状态"]
+    exe = FakeExec(rc=0)
+    p._flash_exec = exe
+    click(p)
+    assert [list(a) for a, _k in exe.calls] == [["open", "-a", str(where[expected])]]
+    assert out_lines(capsys) == ["[信息] 闪购助手：执行 open -a {}".format(where[expected])]
+
+
+def test_not_found_lists_every_place_in_order(tmp_path, capsys):
+    candidates, system, home = laid_out(tmp_path)
+    p = bare_pipeline()
+    p._flash_fetch = fake_fetch(("unreachable", None))
+    attach(p, candidates)
+    assert out_lines(capsys) == [not_found_line(system / NEW, home / NEW, system / OLD, home / OLD)]
+
+
+@pytest.mark.parametrize("name", [NEW, OLD])
+def test_a_configured_location_with_either_name_comes_first(name, tmp_path, capsys):
+    configured = tmp_path / "Desktop" / "Tools" / name
+    configured.mkdir(parents=True)
+    candidates, system, _home = laid_out(tmp_path)
+    (system / NEW).mkdir(parents=True)
+    write_settings(saved(str(configured)))
+    p = bare_pipeline()
+    attach(p, candidates)
+    assert p._flash_app == configured
+    assert out_lines(capsys) == ["[信息] 闪购助手：已装，开始查看 127.0.0.1:9 的状态"]
+
+
 def test_the_configured_location_is_used_first(tmp_path, capsys):
     desktop = tmp_path / "Desktop" / "闪购助手" / APP
     desktop.mkdir(parents=True)
@@ -303,7 +379,8 @@ def test_the_configured_location_is_used_first(tmp_path, capsys):
 @pytest.mark.parametrize("value, line", [
     ("{gone}", "[警告] 闪购助手：settings.json 的 flash_sale.app_path 指的 {gone} 不存在（或不是文件夹），没用它"),
     ("Desktop/" + APP, "[警告] 闪购助手：settings.json 的 flash_sale.app_path 不是完整路径，没用它"),
-    ("{other}", "[警告] 闪购助手：settings.json 的 flash_sale.app_path 指的不是 " + APP + "，没用它"),
+    ("{other}", "[警告] 闪购助手：settings.json 的 flash_sale.app_path 指的不是 Flash Sale Helper.app，"
+                "也不是 闪购助手.app，没用它"),
     (42, "[警告] 闪购助手：settings.json 的 flash_sale.app_path 不是一个路径，没用它"),
 ])
 def test_an_unusable_configured_location_is_skipped_with_one_line(value, line, tmp_path, capsys):
@@ -466,3 +543,53 @@ def test_open_failure_text_guesses_no_cause():
         assert not (ZH_LABELS.search(text) or ZH_CAUSAL.search(text)), text
         assert not (EN_LABELS.search(en) or EN_CAUSAL.search(en)), en
         assert "访达" in text and "Finder" in en
+
+
+# ---- 文档里的两个名字（docs/、README*） -------------------------------------------------------------
+
+ROOT = Path(__file__).resolve().parent.parent
+DOCS = sorted((ROOT / "docs").rglob("*.md")) + sorted(ROOT.glob("README*.md"))
+LIST_ITEM = re.compile(r"(?:[-*+]|\d+\.)\s")
+
+
+def doc_units(text):
+    """把 Markdown 拆成一段一段：表格的每一行、列表的每一项（连同缩进的续行）、空行隔开的段落、标题。"""
+    units, cur = [], []
+    for line in text.splitlines():
+        s = line.lstrip()
+        if not s or s.startswith(("|", "#")) or LIST_ITEM.match(s):
+            if cur:
+                units.append("\n".join(cur))
+            cur = []
+            if s.startswith(("|", "#")):
+                units.append(line)
+                continue
+            if not s:
+                continue
+        cur.append(line)
+    if cur:
+        units.append("\n".join(cur))
+    return units
+
+
+def test_no_doc_names_only_the_old_app():
+    """「闪购助手.app」是 0.10.0 以前唯一的名字：只写它的那一段，多半还是按一个名字写的（找没找到、去哪儿找、认不认），
+    装了 Flash Sale Helper.app 的机器上就不对了。提到旧名字的段落（表格一行、列表一项）里要有新名字。"""
+    new, old = fs.APP_NAMES
+    stale = [f"{doc.relative_to(ROOT)}: {unit.strip()[:80]}"
+             for doc in DOCS for unit in doc_units(doc.read_text(encoding="utf-8"))
+             if old in unit and new not in unit]
+    assert stale == []
+
+
+def test_the_glossary_row_says_what_dock_and_finder_show_under_either_name():
+    """docs/i18n-style.md §1.3「闪购助手」那一行讲英文名的来历。0.10.0 起程序坞和访达里显示的是 Flash Sale Helper，
+    旧版的 闪购助手.app 才只有中文名：那一行两个 .app 名字都要写到，不能再说它只有中文名、访达里显示「闪购助手」。"""
+    style = (ROOT / "docs" / "i18n-style.md").read_text(encoding="utf-8")
+    rows = [line for line in style.splitlines() if line.startswith("| 闪购助手 | **Flash Sale Helper** |")]
+    assert len(rows) == 1
+    row = rows[0]
+    for name in fs.APP_NAMES:
+        assert f"`{name}`" in row, name
+    assert "显示「Flash Sale Helper」" in row
+    assert "它自己只有中文名" not in row
