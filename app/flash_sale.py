@@ -2,8 +2,9 @@
 0.8.0 起另有控制接口，这里读控制密钥、发 POST /start、/stop、/resume（见「控制」一节）。
 
 找程序（直播助手平台轮廓 §5.2「程序名、候选位置」「本机指定位置」、§7.2 第 2 步）：先看 settings.json 的
-flash_sale.app_path（本机指定的位置，configured_app 只认完整路径、名字是 APP_NAME 的），再看 /Applications、
-~/Applications；按完整路径判断、按完整路径 open -a，不跑 mdfind、不按 bundle id。settings 由调用方读好交进来，
+flash_sale.app_path（本机指定的位置，configured_app 只认完整路径、名字是 APP_NAMES 之一的），再看 /Applications、
+~/Applications，先新名字、再旧名字（APP_NAMES：闪购助手 0.10.0 起装成 Flash Sale Helper.app，旧版装的 闪购助手.app
+下一次安装时挪走）；按完整路径判断、按完整路径 open -a，不跑 mdfind、不按 bundle id。settings 由调用方读好交进来，
 这里不读文件。
 
 这里只有纯函数和一个记计时的小类，不依赖 Pipeline，不广播、不打印；接线在 app/pipeline_flash.py。
@@ -45,8 +46,11 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
-APP_NAME = "闪购助手.app"
-APP_PATH = Path("/Applications") / APP_NAME
+# 闪购助手的 .app 名字，按先后找：0.10.0 起每台 Mac 都装成「Flash Sale Helper.app」（带空格），旧版装的「闪购助手.app」
+# 下一次安装时挪走。两个都认、新名字在前：还没装 0.10.0 的机器上只有旧名字，两个都在时认新的。数据目录、控制密钥、
+# 端口、/status 都没变。按完整路径比（大小写要一样），不按 bundle id
+APP_NAMES = ("Flash Sale Helper.app", "闪购助手.app")
+APPLICATIONS = Path("/Applications")
 STATUS_URL = "http://127.0.0.1:9334/status"
 
 POLL_OK_SEC = 3          # 连上了：每 3 秒查一次
@@ -152,24 +156,28 @@ _TS_MIN, _TS_MAX = 1e9, 1e11
 # ---- 找程序、打开程序 --------------------------------------------------------------------
 
 def app_candidates(home=None):
-    """要看的两个位置：/Applications 和 ~/Applications。只看这两处，不跑 mdfind。本机指定的位置另算（configured_app）。"""
-    out = [APP_PATH]
+    """要看的位置，按先后：两个目录（/Applications、~/Applications）× 两个名字（APP_NAMES），先新名字、再旧名字：
+    /Applications/Flash Sale Helper.app → ~/Applications/Flash Sale Helper.app → /Applications/闪购助手.app
+    → ~/Applications/闪购助手.app。只看这几处，不跑 mdfind。本机指定的位置另算、排在最前（configured_app）。"""
+    dirs = [APPLICATIONS]
     try:
         base = Path.home() if home is None else Path(home)
-        out.append(base / "Applications" / APP_NAME)
+        dirs.append(base / "Applications")
     except (RuntimeError, KeyError, OSError):
         pass                      # 取不到家目录：只看 /Applications
-    return tuple(out)
+    return tuple(folder / name for name in APP_NAMES for folder in dirs)
 
 
 def configured_app(saved):
-    """settings.json 里本机指定的位置（{"flash_sale": {"app_path": "…/闪购助手.app"}}）→ (路径, None)；没指定 → (None, None)；
+    """settings.json 里本机指定的位置（{"flash_sale": {"app_path": "…/Flash Sale Helper.app"}}，旧名字「…/闪购助手.app」
+    也认）→ (路径, None)；没指定 → (None, None)；
     指定了却用不了 → (None, 原因代码)。saved 是 load_settings 读出来的整份（调用方读，这里不碰文件）。
     - 没有这个键、键是 null、app_path 缺了、是 null 或空串：没指定；
     - bad_value：flash_sale 不是对象，app_path 不是字符串、带 NUL、长过 APP_PATH_MAX；
     - not_absolute：展开 ~ 以后还不是完整路径；
-    - wrong_name：最后一截不是 APP_NAME（§5.2：只认名字对得上的 .app。iCloud 桌面上整文件夹替换留下的「闪购助手 2.app」
-      也不认：双击到旧的那份，同传显示的版本就和在跑的对不上）。
+    - wrong_name：最后一截不是 APP_NAMES 里的哪一个（§5.2：只认名字对得上的 .app，两边都规整成 NFC 再比，大小写要一样。
+      iCloud 桌面上整文件夹替换留下的「Flash Sale Helper 2.app」「闪购助手 2.app」也不认：双击到旧的那份，同传显示的版本
+      就和在跑的对不上）。
     存不存在不在这里看（find_app 看），所以打开浮层时再找，指定的位置装上了就认得。"""
     if not isinstance(saved, dict):
         return None, None
@@ -190,7 +198,7 @@ def configured_app(saved):
         return None, "bad_value"
     if not os.path.isabs(expanded):
         return None, "not_absolute"
-    if unicodedata.normalize("NFC", path.name) != unicodedata.normalize("NFC", APP_NAME):
+    if unicodedata.normalize("NFC", path.name) not in {unicodedata.normalize("NFC", name) for name in APP_NAMES}:
         return None, "wrong_name"
     return path, None
 
@@ -221,8 +229,10 @@ def installed(platform=None, candidates=None):
     return find_app(platform, candidates) is not None
 
 
-def open_argv(path=APP_PATH):
-    """按完整路径打开：检测到的和打开的是同一个东西。不按 bundle id 打开（它不进公开仓库）。
+def open_argv(path):
+    """按完整路径打开：检测到的和打开的是同一个东西（find_app 找到的那一份；两个名字都认以后没有缺省的那一个）。
+    不按 bundle id 打开（它不进公开仓库）。完整路径是 argv 里的一个元素，交给 create_subprocess_exec、不经 shell：
+    「Flash Sale Helper.app」里的空格原样留着，不拆、不转义。
     不带任何来自页面的参数：控制页发来的指令只有一个类型，argv 写死在这里。"""
     return ["open", "-a", str(path)]
 

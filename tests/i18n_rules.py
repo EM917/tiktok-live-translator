@@ -69,8 +69,9 @@ NON_UI_CHINESE = {
         "双语，英文界面不露中文。它在识别路径上（不变量 3），这里不改成 L()": ("识别模型已释放",),
     },
     "app/flash_sale.py": {
-        "闪购助手的 .app 文件名：拼成 /Applications、~/Applications 下的程序路径，用来判断装没装、"
-        "交给 open -a 打开，是程序路径，不上界面（界面上的名字在前端按术语表写）": ("闪购助手.app",),
+        "闪购助手旧版的 .app 文件名（0.10.0 起是 Flash Sale Helper.app，两个都认）：拼成 /Applications、"
+        "~/Applications 下的程序路径，用来判断装没装、交给 open -a 打开，也用来认 settings.json 里指定的位置，"
+        "是程序路径，不上界面（界面上的名字在前端按术语表写）": ("闪购助手.app",),
     },
     "app/glossary.py": {
         "把全局 glossary.txt 里的主播词条迁进 profiles/ 下该主播的词表时，写进那个文件的注释行："

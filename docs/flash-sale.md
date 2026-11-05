@@ -36,14 +36,21 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 
 ## 2. 有没有这个按钮
 
-- 找程序（直播助手平台轮廓 §7.2 第 2 步，2026-10-29）按先后看三处：`settings.json` 里本机指定的位置
-  （`{"flash_sale": {"app_path": "…/闪购助手.app"}}`，`flash_sale.configured_app`）、`/Applications/闪购助手.app`、
-  `~/Applications/闪购助手.app`（`flash_sale.app_candidates`）。不跑 mdfind；不是 macOS 一律当没装。按**完整路径**判断和打开，
-  检测到的和打开的是同一个东西；不按 bundle id 打开（它不进公开仓库）。
-  - 指定的位置只认完整路径（可以用 `~`）、最后一截正好是 `闪购助手.app` 的（「闪购助手 2.app」不认）；不存在、不是文件夹、
-    不是完整路径、名字不对、不是字符串的，跳过，终端各一行（同一种只打一次），接着看另外两处。
+- 两个名字（2026-11-05）：闪购助手 0.10.0 起每台 Mac 都装成 `Flash Sale Helper.app`（带空格），旧版装的 `闪购助手.app`
+  下一次安装时挪走（0.10.0 只改了 Info.plist 里的名字，0.11 沿用新名字）。还没装 0.10.0 的机器上只有旧名字，所以两个都认、
+  新名字在前（`flash_sale.APP_NAMES`）。数据目录、控制密钥、9334、`/status` 的字段和记录正文都没变。
+- 找程序（直播助手平台轮廓 §7.2 第 2 步，2026-10-29）按先后看五处：`settings.json` 里本机指定的位置
+  （`{"flash_sale": {"app_path": "…/Flash Sale Helper.app"}}`，旧名字也认，`flash_sale.configured_app`）、
+  `/Applications/Flash Sale Helper.app`、`~/Applications/Flash Sale Helper.app`、`/Applications/闪购助手.app`、
+  `~/Applications/闪购助手.app`（`flash_sale.app_candidates`：先新名字、再旧名字，同一个名字先 `/Applications`）。
+  第一个是文件夹的就用它：两个名字都装着时认新名字那一份，哪怕它在 `~/Applications`、旧的在 `/Applications`。
+  不跑 mdfind；不是 macOS 一律当没装。按**完整路径**判断和打开，检测到的和打开的是同一个东西；不按 bundle id 打开
+  （它不进公开仓库）。
+  - 指定的位置只认完整路径（可以用 `~`）、最后一截正好是 `Flash Sale Helper.app` 或 `闪购助手.app` 的（两边规整成 NFC 再比，
+    大小写要一样；「Flash Sale Helper 2.app」「闪购助手 2.app」「flash sale helper.app」不认）；不存在、不是文件夹、
+    不是完整路径、名字不对、不是字符串的，跳过，终端各一行（同一种只打一次），接着看另外四处。
   - 这一步只读这个键，不写。「选一下它在哪」（pywebview 的文件对话框）在第 6 步首页「工具」行里。
-  - 都没找到：终端一行，列出看过哪几处、指定位置写在哪个键里（双击 `.app` 启动时终端输出进运行日志）。
+  - 都没找到：终端一行，说两个名字都没找到、按先后列出看过哪几处、指定位置写在哪个键里（双击 `.app` 启动时终端输出进运行日志）。
 - 启动时判一次：`main.py` 在第一次 hello 之前 `await pipeline.attach_flash_sale()`。
 - **没找到、但闪购助手正开着**（launch-7，用户 10-29 选 B）：没找到 `.app` 时，当场读一次 9334 的 `/status`
   （最多 4 秒；没人在听时立刻连不上），回话像闪购助手的（读懂了、`schema` 是 1、`page` 是契约里的代码，`flash_sale.status_refusal`，
@@ -51,7 +58,7 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
   `app_found` 是 `false`（找到了是 `true`；状态里没有这个键时页面当找到了）。这时闪购助手又没在运行、读不出的话，那一排一颗按钮
   都没有，旁边写一句「把它拖进「应用程序」，再关上、打开这个浮层……」（`docs/i18n-style.md` #181）。回话不像闪购助手的
   （schema、page 对不上）终端一行，不接。
-- **打开浮层时再找一次**：页面打开闪购浮层时发 `{"type": "flash_find"}`（不带参数，带了也不看），后端照上面三处再找一遍
+- **打开浮层时再找一次**：页面打开闪购浮层时发 `{"type": "flash_find"}`（不带参数，带了也不看），后端照上面五处再找一遍
   （只看文件系统，不连 9334），找到的变了才发布（终端一行「找到了 …」或「没找到 …」）。装进「应用程序」、挪了位置、改了
   `settings.json`，都不用重启。没有按钮就没有浮层：启动时既没找到、9334 上也没有它的，要等第 6 步首页「工具」行的「重新找」，
   现在还是要重启。手机发不进 `flash_find`（入站只认 retranslate），浮窗页的入站一律丢弃。
@@ -229,7 +236,8 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 - 2026-10-28 起在浮层顶部那一排的最后（§9.6），不再在最底下：42 个商品时用户在最底下找不到它。连不上、版本太旧时
   这一排只剩它一颗。
 - 页面发 `{"type": "open_flash_helper"}`，不带参数（带了也不看）。argv 写死成 `open -a <检测到的完整路径>`
-  （`flash_sale.open_argv`），页面发什么都进不了 argv。
+  （`flash_sale.open_argv`），页面发什么都进不了 argv。完整路径是 argv 里的一个元素，交给 `create_subprocess_exec`、
+  不经 shell：`Flash Sale Helper.app` 里的空格原样留着，不拆、不转义。
 - `handle_control` 立刻返回，`open` 放后台跑：不挡同一页面后面的「停止」。上一次还没返回时，连点只跑一次。
 - 成功（返回 0）：不发任何提示，状态自己会从「没在运行」变成别的。
 - 失败：终端一行，再发 `{"type": "notice", "where": "flash", "text": …}`，页面写进浮层里的 `#flash-note`（全局提示照样排队）。

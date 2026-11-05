@@ -35,21 +35,40 @@ UPDATED_S = iso_s("2026-10-27T21:36:07.165+0000")
 
 # ---- 找程序、打开程序 --------------------------------------------------------------------
 
+# 闪购助手 0.10.0 起装成「Flash Sale Helper.app」，旧版装的「闪购助手.app」下一次安装时挪走：两个名字都认，新名字在前
+NEW, OLD = "Flash Sale Helper.app", "闪购助手.app"
+SYSTEM = Path("/Applications")
+
+
+def laid_out(tmp_path):
+    """真的 app_candidates 排出来的先后，只是把 /Applications 换成 tmp_path 里的一个目录（绝不看本机真的
+    /Applications）：→ (候选位置, 系统那一处的目录, 家目录那一处的目录)。"""
+    system, home = tmp_path / "system", tmp_path / "home"
+    out = tuple(system / p.name if p.parent == SYSTEM else p for p in REAL_APP_CANDIDATES(home=home))
+    return out, system, home / "Applications"
+
+
+def test_the_helper_has_two_names_and_the_new_one_comes_first():
+    assert fs.APP_NAMES == (NEW, OLD)
+
+
 @pytest.mark.parametrize("platform", ["linux", "win32", "cygwin"])
-def test_not_macos_means_not_installed_even_if_the_folder_exists(platform, tmp_path):
-    app = tmp_path / fs.APP_NAME
+@pytest.mark.parametrize("name", [NEW, OLD])
+def test_not_macos_means_not_installed_even_if_the_folder_exists(platform, name, tmp_path):
+    app = tmp_path / name
     app.mkdir()
     assert fs.find_app(platform=platform, candidates=[app]) is None
     assert fs.installed(platform=platform, candidates=[app]) is False
 
 
 def test_macos_with_no_app_at_the_known_places_is_not_installed(tmp_path):
-    assert fs.find_app(platform="darwin", candidates=[tmp_path / "a" / fs.APP_NAME,
-                                                      tmp_path / "b" / fs.APP_NAME]) is None
+    candidates, _system, _home = laid_out(tmp_path)
+    assert fs.find_app(platform="darwin", candidates=candidates) is None
 
 
-def test_macos_finds_the_first_existing_app_folder(tmp_path):
-    first, second = tmp_path / "a" / fs.APP_NAME, tmp_path / "b" / fs.APP_NAME
+@pytest.mark.parametrize("name", [NEW, OLD])
+def test_macos_finds_the_first_existing_app_folder(name, tmp_path):
+    first, second = tmp_path / "a" / name, tmp_path / "b" / name
     second.mkdir(parents=True)
     assert fs.find_app(platform="darwin", candidates=[first, second]) == second
     first.mkdir(parents=True)
@@ -57,16 +76,46 @@ def test_macos_finds_the_first_existing_app_folder(tmp_path):
     assert fs.installed(platform="darwin", candidates=[first]) is True
 
 
-def test_a_plain_file_with_the_app_name_is_not_an_app(tmp_path):
-    fake = tmp_path / fs.APP_NAME
+@pytest.mark.parametrize("name", [NEW, OLD])
+def test_a_plain_file_with_the_app_name_is_not_an_app(name, tmp_path):
+    fake = tmp_path / name
     fake.write_text("x", encoding="utf-8")
     assert fs.find_app(platform="darwin", candidates=[fake]) is None
 
 
-def test_the_known_places_are_applications_and_the_home_applications(tmp_path):
-    got = REAL_APP_CANDIDATES(home=tmp_path)
-    assert got == (Path("/Applications") / fs.APP_NAME, tmp_path / "Applications" / fs.APP_NAME)
-    assert fs.APP_PATH == got[0]
+def test_the_known_places_are_the_new_name_then_the_old_name_in_applications_then_home(tmp_path):
+    """先后：/Applications/Flash Sale Helper.app → ~/Applications/Flash Sale Helper.app → /Applications/闪购助手.app
+    → ~/Applications/闪购助手.app。本机指定的位置另算、排在它们前面（configured_app、app_search_paths）。"""
+    home = tmp_path / "home"
+    assert REAL_APP_CANDIDATES(home=home) == (SYSTEM / NEW, home / "Applications" / NEW,
+                                              SYSTEM / OLD, home / "Applications" / OLD)
+
+
+def test_without_a_home_only_applications_is_looked_at(monkeypatch):
+    def no_home():
+        raise RuntimeError("no home")
+    monkeypatch.setattr(Path, "home", staticmethod(no_home))
+    assert REAL_APP_CANDIDATES() == (SYSTEM / NEW, SYSTEM / OLD)
+
+
+@pytest.mark.parametrize("where, name", [("system", NEW), ("home", NEW), ("system", OLD), ("home", OLD)])
+def test_either_name_is_found_in_either_place(where, name, tmp_path):
+    candidates, system, home = laid_out(tmp_path)
+    app = (system if where == "system" else home) / name
+    app.mkdir(parents=True)
+    assert fs.find_app(platform="darwin", candidates=candidates) == app
+
+
+@pytest.mark.parametrize("old_where", ["system", "home"])
+@pytest.mark.parametrize("new_where", ["system", "home"])
+def test_the_new_name_wins_when_both_are_there(new_where, old_where, tmp_path):
+    """装了 0.10.0、旧的还没被挪走（或者挪回来了）：认新名字那一份，哪怕它在 ~/Applications、旧的在 /Applications。"""
+    candidates, system, home = laid_out(tmp_path)
+    new = (system if new_where == "system" else home) / NEW
+    old = (system if old_where == "system" else home) / OLD
+    new.mkdir(parents=True)
+    old.mkdir(parents=True)
+    assert fs.find_app(platform="darwin", candidates=candidates) == new
 
 
 def test_tests_never_see_the_real_install():
@@ -75,10 +124,19 @@ def test_tests_never_see_the_real_install():
     assert ":9334" not in fs.STATUS_URL
 
 
-def test_open_argv_opens_by_full_path():
-    assert fs.open_argv(Path("/Applications") / fs.APP_NAME) == [
-        "open", "-a", str(Path("/Applications") / fs.APP_NAME)]
-    assert fs.open_argv() == ["open", "-a", str(fs.APP_PATH)]
+@pytest.mark.parametrize("name", [NEW, OLD])
+def test_open_argv_opens_by_full_path(name):
+    """完整路径是 argv 里的一个元素：新名字里的空格原样留着，不拆、不转义、不经 shell。"""
+    path = SYSTEM / name
+    assert fs.open_argv(path) == ["open", "-a", str(path)]
+    spaced = Path("/Users/someone/My Apps") / name
+    assert fs.open_argv(spaced) == ["open", "-a", str(spaced)]
+
+
+def test_open_argv_has_no_default_path():
+    """两个名字都认以后没有「缺省的那一个」：要打开的永远是 find_app 找到的那一份。"""
+    with pytest.raises(TypeError):
+        fs.open_argv()
 
 
 # ---- parse_iso -----------------------------------------------------------------------------
