@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import unicodedata
 from pathlib import Path
 
@@ -542,3 +543,53 @@ def test_open_failure_text_guesses_no_cause():
         assert not (ZH_LABELS.search(text) or ZH_CAUSAL.search(text)), text
         assert not (EN_LABELS.search(en) or EN_CAUSAL.search(en)), en
         assert "访达" in text and "Finder" in en
+
+
+# ---- 文档里的两个名字（docs/、README*） -------------------------------------------------------------
+
+ROOT = Path(__file__).resolve().parent.parent
+DOCS = sorted((ROOT / "docs").rglob("*.md")) + sorted(ROOT.glob("README*.md"))
+LIST_ITEM = re.compile(r"(?:[-*+]|\d+\.)\s")
+
+
+def doc_units(text):
+    """把 Markdown 拆成一段一段：表格的每一行、列表的每一项（连同缩进的续行）、空行隔开的段落、标题。"""
+    units, cur = [], []
+    for line in text.splitlines():
+        s = line.lstrip()
+        if not s or s.startswith(("|", "#")) or LIST_ITEM.match(s):
+            if cur:
+                units.append("\n".join(cur))
+            cur = []
+            if s.startswith(("|", "#")):
+                units.append(line)
+                continue
+            if not s:
+                continue
+        cur.append(line)
+    if cur:
+        units.append("\n".join(cur))
+    return units
+
+
+def test_no_doc_names_only_the_old_app():
+    """「闪购助手.app」是 0.10.0 以前唯一的名字：只写它的那一段，多半还是按一个名字写的（找没找到、去哪儿找、认不认），
+    装了 Flash Sale Helper.app 的机器上就不对了。提到旧名字的段落（表格一行、列表一项）里要有新名字。"""
+    new, old = fs.APP_NAMES
+    stale = [f"{doc.relative_to(ROOT)}: {unit.strip()[:80]}"
+             for doc in DOCS for unit in doc_units(doc.read_text(encoding="utf-8"))
+             if old in unit and new not in unit]
+    assert stale == []
+
+
+def test_the_glossary_row_says_what_dock_and_finder_show_under_either_name():
+    """docs/i18n-style.md §1.3「闪购助手」那一行讲英文名的来历。0.10.0 起程序坞和访达里显示的是 Flash Sale Helper，
+    旧版的 闪购助手.app 才只有中文名：那一行两个 .app 名字都要写到，不能再说它只有中文名、访达里显示「闪购助手」。"""
+    style = (ROOT / "docs" / "i18n-style.md").read_text(encoding="utf-8")
+    rows = [line for line in style.splitlines() if line.startswith("| 闪购助手 | **Flash Sale Helper** |")]
+    assert len(rows) == 1
+    row = rows[0]
+    for name in fs.APP_NAMES:
+        assert f"`{name}`" in row, name
+    assert "显示「Flash Sale Helper」" in row
+    assert "它自己只有中文名" not in row
